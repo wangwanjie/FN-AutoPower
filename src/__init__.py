@@ -1,0 +1,1 @@
+"""AutoPower application modules."""
