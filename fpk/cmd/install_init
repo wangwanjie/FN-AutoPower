@@ -1,0 +1,6 @@
+#!/bin/bash
+set -e
+
+DATA_DIR="${TRIM_PKGVAR:-/var/packages/autopower/var}"
+mkdir -p "$DATA_DIR"
+exit 0

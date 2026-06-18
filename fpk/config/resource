@@ -1,0 +1,22 @@
+{
+    "data-share": {
+        "shares": [
+            {
+                "name": "autopower",
+                "permission": {
+                    "rw": [
+                        "autopower"
+                    ]
+                }
+            },
+            {
+                "name": "autopower/data",
+                "permission": {
+                    "rw": [
+                        "autopower"
+                    ]
+                }
+            }
+        ]
+    }
+}

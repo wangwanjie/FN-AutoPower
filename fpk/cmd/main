@@ -1,0 +1,55 @@
+#!/bin/bash
+set -e
+
+if [ -n "${TRIM_APPDEST:-}" ] && [ -d "${TRIM_APPDEST}/AutoPower" ]; then
+  APP_DIR="${TRIM_APPDEST}/AutoPower"
+elif [ -n "${TRIM_APPDEST:-}" ] && [ -d "${TRIM_APPDEST}/src" ]; then
+  APP_DIR="${TRIM_APPDEST}"
+else
+  APP_DIR="$(cd "$(dirname "$0")/../app/AutoPower" && pwd)"
+fi
+DATA_DIR="${TRIM_PKGVAR:-/var/packages/autopower/var}"
+PORT="${AUTOPOWER_PORT:-3868}"
+PID_FILE="${DATA_DIR}/autopower.pid"
+LOG_FILE="${DATA_DIR}/autopower.log"
+
+mkdir -p "$DATA_DIR"
+
+is_running() {
+  if [ -f "$PID_FILE" ]; then
+    PID="$(cat "$PID_FILE")"
+    if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
+      return 0
+    fi
+  fi
+  return 1
+}
+
+case "${1:-}" in
+  start)
+    if is_running; then
+      exit 0
+    fi
+    cd "$APP_DIR"
+    AUTOPOWER_DATA_DIR="$DATA_DIR" AUTOPOWER_WEB_DIR="$APP_DIR/web" AUTOPOWER_PORT="$PORT" \
+      nohup python3 "$APP_DIR/src/autopower_server.py" --host 0.0.0.0 --port "$PORT" --data-dir "$DATA_DIR" --web-dir "$APP_DIR/web" \
+      >> "$LOG_FILE" 2>&1 &
+    echo $! > "$PID_FILE"
+    ;;
+  stop)
+    if is_running; then
+      kill "$(cat "$PID_FILE")" 2>/dev/null || true
+      sleep 1
+    fi
+    rm -f "$PID_FILE"
+    ;;
+  status)
+    if is_running; then
+      exit 0
+    fi
+    exit 3
+    ;;
+  *)
+    exit 1
+    ;;
+esac

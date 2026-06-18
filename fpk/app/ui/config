@@ -1,0 +1,14 @@
+{
+    ".url": {
+        "autopower.Application": {
+            "title": "自动开关机",
+            "desc": "开关机计划管理",
+            "icon": "images/icon_{0}.png",
+            "type": "iframe",
+            "protocol": "http",
+            "port": "3868",
+            "url": "/",
+            "allUsers": true
+        }
+    }
+}
