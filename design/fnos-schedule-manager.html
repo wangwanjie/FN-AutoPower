@@ -1,0 +1,824 @@
+
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>fnOS 自动开关机计划管理界面</title>
+  <style>
+    :root {
+      --bg: #ffffff;
+      --surface: #ffffff;
+      --shell: #f5f7fa;
+      --line: #e5e7eb;
+      --line-strong: #d8dde6;
+      --text: #111827;
+      --muted: #6b7280;
+      --blue: #0f7bed;
+      --blue-soft: #eef6ff;
+      --blue-border: #cfe3fb;
+      --btn: #f3f4f6;
+      --btn-hover: #e9edf3;
+      --shadow: 0 10px 30px rgba(17, 24, 39, 0.10), 0 2px 8px rgba(17, 24, 39, 0.05);
+      --radius-card: 8px;
+      --radius-btn: 6px;
+      --radius-input: 6px;
+      --font: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      background: var(--shell);
+      color: var(--text);
+      font-family: var(--font);
+      font-size: 14px;
+      line-height: 1.45;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+
+    .page {
+      max-width: 1440px;
+      margin: 0 auto;
+      padding: 28px;
+    }
+
+    .hero {
+      margin-bottom: 18px;
+    }
+
+    .hero h1 {
+      margin: 0 0 6px;
+      font-size: 22px;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+    }
+
+    .hero p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: minmax(780px, 1.2fr) minmax(360px, 0.8fr);
+      gap: 24px;
+      align-items: start;
+    }
+
+    .panel {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: var(--radius-card);
+      overflow: hidden;
+    }
+
+    .panel-header {
+      padding: 14px 18px;
+      border-bottom: 1px solid var(--line);
+      background: #fbfcfd;
+    }
+
+    .panel-title {
+      font-size: 16px;
+      font-weight: 600;
+      margin: 0;
+    }
+
+    .window {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: var(--radius-card);
+      overflow: hidden;
+      position: relative;
+    }
+
+    .app-shell {
+      background: var(--bg);
+      min-height: 760px;
+    }
+
+    .tabs {
+      display: flex;
+      gap: 28px;
+      padding: 0 22px;
+      border-bottom: 1px solid var(--line);
+      background: #fff;
+      min-height: 56px;
+      align-items: end;
+    }
+
+    .tab {
+      position: relative;
+      padding: 17px 0 15px;
+      color: #4b5563;
+      white-space: nowrap;
+    }
+
+    .tab.active {
+      color: var(--blue);
+      font-weight: 600;
+    }
+
+    .tab.active::after {
+      content: "";
+      position: absolute;
+      left: 50%;
+      bottom: -1px;
+      width: 28px;
+      height: 3px;
+      transform: translateX(-50%);
+      border-radius: 999px;
+      background: var(--blue);
+    }
+
+    .toolbar {
+      display: flex;
+      gap: 10px;
+      padding: 18px 22px 16px;
+      border-bottom: 1px solid var(--line);
+      background: #fff;
+      flex-wrap: wrap;
+    }
+
+    .btn {
+      appearance: none;
+      border: 1px solid var(--line-strong);
+      background: var(--btn);
+      color: #374151;
+      border-radius: var(--radius-btn);
+      font-size: 14px;
+      padding: 8px 16px;
+      line-height: 1;
+      min-height: 34px;
+      cursor: default;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .btn:hover {
+      background: var(--btn-hover);
+    }
+
+    .btn.primary {
+      background: var(--blue);
+      color: #fff;
+      border-color: var(--blue);
+    }
+
+    .btn.primary:hover {
+      background: #0d72db;
+    }
+
+    .table-wrap {
+      padding: 0 22px 24px;
+      background: #fff;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: separate;
+      border-spacing: 0;
+      table-layout: fixed;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+
+    th, td {
+      text-align: left;
+      padding: 16px 18px;
+      border-bottom: 1px solid var(--line);
+      vertical-align: middle;
+      background: #fff;
+    }
+
+    th {
+      font-weight: 600;
+      color: #374151;
+      background: #fbfcfd;
+    }
+
+    th:not(:last-child),
+    td:not(:last-child) {
+      border-right: 1px solid var(--line);
+    }
+
+    tr:last-child td {
+      border-bottom: none;
+    }
+
+    tbody tr {
+      transition: background-color 0.15s ease;
+    }
+
+    tbody tr:hover td {
+      background: #f8fafc;
+    }
+
+    tbody tr.selected td {
+      background: var(--blue-soft);
+    }
+
+    .col-check { width: 140px; }
+    .col-time { width: auto; }
+    .col-action { width: 180px; }
+
+    .cell-check {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      color: #374151;
+    }
+
+    .check,
+    .radio {
+      flex: 0 0 auto;
+      position: relative;
+      display: inline-block;
+    }
+
+    .check {
+      width: 16px;
+      height: 16px;
+      border-radius: 4px;
+      border: 1px solid #9fb8da;
+      background: #fff;
+    }
+
+    .check.checked {
+      background: var(--blue);
+      border-color: var(--blue);
+    }
+
+    .check.checked::after {
+      content: "";
+      position: absolute;
+      left: 4px;
+      top: 1px;
+      width: 5px;
+      height: 9px;
+      border: solid #fff;
+      border-width: 0 2px 2px 0;
+      transform: rotate(45deg);
+    }
+
+    .check.indeterminate {
+      background: #fff;
+      border-color: #9fb8da;
+    }
+
+    .check.indeterminate::after {
+      content: "";
+      position: absolute;
+      left: 3px;
+      top: 7px;
+      width: 8px;
+      height: 2px;
+      border-radius: 2px;
+      background: var(--blue);
+    }
+
+    .select {
+      display: inline-flex;
+      align-items: center;
+      justify-content: space-between;
+      min-width: 106px;
+      padding: 8px 12px;
+      border: 1px solid var(--line-strong);
+      border-radius: var(--radius-input);
+      background: #fff;
+      color: #1f2937;
+      gap: 14px;
+    }
+
+    .select.wide { width: 100%; }
+    .caret {
+      width: 0;
+      height: 0;
+      border-left: 5px solid transparent;
+      border-right: 5px solid transparent;
+      border-top: 6px solid #6b7280;
+      flex: 0 0 auto;
+    }
+
+    .workspace {
+      position: relative;
+      background:
+        linear-gradient(to bottom, rgba(255,255,255,0.82), rgba(255,255,255,0.82)),
+        #f8fafc;
+      min-height: 760px;
+    }
+
+    .overlay {
+      position: absolute;
+      inset: 0;
+      background: rgba(15, 23, 42, 0.10);
+      pointer-events: none;
+    }
+
+    .modal {
+      position: absolute;
+      left: 50%;
+      top: 64px;
+      transform: translateX(-50%);
+      width: min(560px, calc(100% - 40px));
+      background: #fff;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-card);
+      box-shadow: var(--shadow);
+      z-index: 3;
+      overflow: visible;
+    }
+
+    .modal-header {
+      padding: 14px 18px;
+      border-bottom: 1px solid var(--line);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .modal-title {
+      margin: 0;
+      font-size: 16px;
+      font-weight: 600;
+    }
+
+    .icon-close {
+      width: 28px;
+      height: 28px;
+      border-radius: 6px;
+      display: grid;
+      place-items: center;
+      color: #6b7280;
+      border: 1px solid transparent;
+      font-size: 16px;
+    }
+
+    .modal-body {
+      padding: 18px;
+    }
+
+    .form-grid {
+      display: grid;
+      grid-template-columns: 92px 1fr;
+      row-gap: 16px;
+      column-gap: 14px;
+      align-items: start;
+    }
+
+    .label {
+      color: #374151;
+      padding-top: 8px;
+    }
+
+    .field {
+      min-width: 0;
+    }
+
+    .radio-list {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      padding-top: 2px;
+    }
+
+    .radio-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      color: #1f2937;
+    }
+
+    .radio {
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      border: 1px solid #9fb8da;
+      background: #fff;
+    }
+
+    .radio.checked {
+      border-color: var(--blue);
+    }
+
+    .radio.checked::after {
+      content: "";
+      position: absolute;
+      inset: 3px;
+      border-radius: 50%;
+      background: var(--blue);
+    }
+
+    .time-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .time-row .select {
+      width: 96px;
+    }
+
+    .colon {
+      color: #4b5563;
+      font-weight: 600;
+    }
+
+    .notice {
+      margin-top: 18px;
+      padding: 12px 14px;
+      border-radius: 6px;
+      background: #f8fbff;
+      border: 1px solid #dbeafe;
+      color: var(--muted);
+      line-height: 1.6;
+    }
+
+    .notice .prefix {
+      color: var(--blue);
+      font-weight: 600;
+    }
+
+    .modal-footer {
+      padding: 14px 18px;
+      border-top: 1px solid var(--line);
+      display: flex;
+      justify-content: flex-end;
+      gap: 10px;
+      background: #fff;
+    }
+
+    .dropdown-layer {
+      position: absolute;
+      left: 124px;
+      top: 132px;
+      width: 220px;
+      background: #fff;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: 0 12px 28px rgba(17,24,39,0.14), 0 2px 8px rgba(17,24,39,0.06);
+      z-index: 5;
+      overflow: hidden;
+    }
+
+    .drop-section {
+      padding: 8px 0;
+    }
+
+    .drop-section + .drop-section {
+      border-top: 1px solid var(--line);
+    }
+
+    .drop-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 9px 14px;
+      color: #1f2937;
+      background: #fff;
+    }
+
+    .drop-item.selected {
+      font-weight: 600;
+      background: #f8fbff;
+    }
+
+    .drop-item .check {
+      width: 15px;
+      height: 15px;
+      border-radius: 4px;
+    }
+
+    .spec-panel {
+      padding: 18px;
+    }
+
+    .spec-panel h3 {
+      margin: 0 0 14px;
+      font-size: 15px;
+      font-weight: 600;
+    }
+
+    .spec-list {
+      display: grid;
+      gap: 12px;
+    }
+
+    .spec-card {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 14px;
+      background: #fff;
+    }
+
+    .spec-card b {
+      display: block;
+      margin-bottom: 6px;
+      font-size: 14px;
+    }
+
+    .spec-card p {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.6;
+    }
+
+    .legend {
+      margin-top: 14px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    @media (max-width: 1120px) {
+      .layout {
+        grid-template-columns: 1fr;
+      }
+      .workspace {
+        min-height: 820px;
+      }
+    }
+
+    @media (max-width: 720px) {
+      .page {
+        padding: 16px;
+      }
+
+      .tabs {
+        gap: 18px;
+        padding: 0 14px;
+        overflow-x: auto;
+        align-items: end;
+      }
+
+      .toolbar,
+      .table-wrap {
+        padding-left: 14px;
+        padding-right: 14px;
+      }
+
+      table {
+        min-width: 620px;
+      }
+
+      .table-scroll {
+        overflow-x: auto;
+      }
+
+      .form-grid {
+        grid-template-columns: 1fr;
+        row-gap: 10px;
+      }
+
+      .label {
+        padding-top: 0;
+      }
+
+      .dropdown-layer {
+        left: 18px;
+        right: 18px;
+        width: auto;
+        top: 176px;
+      }
+
+      .modal {
+        top: 24px;
+      }
+
+      .workspace {
+        min-height: 900px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <div class="hero">
+      <h1>fnOS 自动开关机计划管理</h1>
+      <p>参考群晖 DSM 的企业级 NAS 控制台风格，展示三个关键界面：计划列表页、编辑/新增计划弹窗、日期下拉展开态。</p>
+    </div>
+
+    <div class="layout">
+      <section class="panel">
+        <div class="panel-header">
+          <h2 class="panel-title">界面 1：计划列表页（主界面）</h2>
+        </div>
+        <div class="app-shell">
+          <div class="tabs">
+            <div class="tab">常规</div>
+            <div class="tab active">开关机计划管理</div>
+            <div class="tab">硬盘休眠</div>
+            <div class="tab">不断电系统</div>
+          </div>
+
+          <div class="toolbar">
+            <button class="btn">新增</button>
+            <button class="btn">编辑</button>
+            <button class="btn">删除</button>
+            <button class="btn">计划管理总览</button>
+          </div>
+
+          <div class="table-wrap">
+            <div class="table-scroll">
+              <table aria-label="开关机计划表">
+                <thead>
+                  <tr>
+                    <th class="col-check">
+                      <span class="cell-check">
+                        <span class="check indeterminate" aria-hidden="true"></span>
+                        已启动
+                      </span>
+                    </th>
+                    <th class="col-time">触发时间</th>
+                    <th class="col-action">操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr class="selected">
+                    <td>
+                      <span class="cell-check">
+                        <span class="check checked" aria-hidden="true"></span>
+                      </span>
+                    </td>
+                    <td>每天 15:00</td>
+                    <td>
+                      <span class="select">开机 <span class="caret"></span></span>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td>
+                      <span class="cell-check">
+                        <span class="check checked" aria-hidden="true"></span>
+                      </span>
+                    </td>
+                    <td>每天 20:00</td>
+                    <td>
+                      <span class="select">关机 <span class="caret"></span></span>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td>
+                      <span class="cell-check">
+                        <span class="check" aria-hidden="true"></span>
+                      </span>
+                    </td>
+                    <td>周五 14:30</td>
+                    <td>
+                      <span class="select">关机 <span class="caret"></span></span>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2 class="panel-title">界面 2 / 3：编辑弹窗 + 日期下拉展开态</h2>
+        </div>
+        <div class="workspace">
+          <div class="app-shell">
+            <div class="tabs">
+              <div class="tab">常规</div>
+              <div class="tab active">开关机计划管理</div>
+              <div class="tab">硬盘休眠</div>
+              <div class="tab">不断电系统</div>
+            </div>
+            <div class="toolbar">
+              <button class="btn">新增</button>
+              <button class="btn">编辑</button>
+              <button class="btn">删除</button>
+              <button class="btn">计划管理总览</button>
+            </div>
+            <div class="table-wrap">
+              <table aria-hidden="true">
+                <thead>
+                  <tr>
+                    <th class="col-check">已启动</th>
+                    <th class="col-time">触发时间</th>
+                    <th class="col-action">操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr class="selected">
+                    <td><span class="check checked"></span></td>
+                    <td>每天 15:00</td>
+                    <td><span class="select">开机 <span class="caret"></span></span></td>
+                  </tr>
+                  <tr>
+                    <td><span class="check checked"></span></td>
+                    <td>每天 20:00</td>
+                    <td><span class="select">关机 <span class="caret"></span></span></td>
+                  </tr>
+                  <tr>
+                    <td><span class="check"></span></td>
+                    <td>周五 14:30</td>
+                    <td><span class="select">关机 <span class="caret"></span></span></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="overlay"></div>
+
+          <div class="modal" role="dialog" aria-label="编辑计划管理">
+            <div class="modal-header">
+              <h3 class="modal-title">编辑计划管理</h3>
+              <div class="icon-close">×</div>
+            </div>
+
+            <div class="modal-body">
+              <div class="form-grid">
+                <div class="label">操作：</div>
+                <div class="field">
+                  <div class="radio-list">
+                    <label class="radio-item">
+                      <span class="radio checked" aria-hidden="true"></span>
+                      <span>开机</span>
+                    </label>
+                    <label class="radio-item">
+                      <span class="radio" aria-hidden="true"></span>
+                      <span>关机</span>
+                    </label>
+                  </div>
+                </div>
+
+                <div class="label">日期：</div>
+                <div class="field">
+                  <div class="select wide">每天 <span class="caret"></span></div>
+                </div>
+
+                <div class="label">时间：</div>
+                <div class="field">
+                  <div class="time-row">
+                    <div class="select">15 <span class="caret"></span></div>
+                    <span class="colon">:</span>
+                    <div class="select">00 <span class="caret"></span></div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="notice">
+                <span class="prefix">注意：</span>
+                系统将启用“修复电源问题后自动重新启动”功能。若要禁用此功能，请进入硬件和电源 &gt; 常规 &gt; 电源恢复。
+              </div>
+            </div>
+
+            <div class="modal-footer">
+              <button class="btn">取消</button>
+              <button class="btn primary">确定</button>
+            </div>
+
+            <div class="dropdown-layer" aria-label="日期下拉展开层">
+              <div class="drop-section">
+                <div class="drop-item selected">每天</div>
+                <div class="drop-item">假日</div>
+                <div class="drop-item">平日</div>
+              </div>
+              <div class="drop-section">
+                <div class="drop-item"><span class="check checked"></span>周日</div>
+                <div class="drop-item"><span class="check checked"></span>周一</div>
+                <div class="drop-item"><span class="check checked"></span>周二</div>
+                <div class="drop-item"><span class="check checked"></span>周三</div>
+                <div class="drop-item"><span class="check checked"></span>周四</div>
+                <div class="drop-item"><span class="check checked"></span>周五</div>
+                <div class="drop-item"><span class="check checked"></span>周六</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel" style="grid-column: 1 / -1;">
+        <div class="panel-header">
+          <h2 class="panel-title">设计说明</h2>
+        </div>
+        <div class="spec-panel">
+          <div class="spec-list">
+            <div class="spec-card">
+              <b>视觉系统</b>
+              <p>采用 DSM / 系统设置风格的扁平浅色界面：纯白底、浅灰分隔线、克制的蓝色强调、无重阴影，仅在弹窗和下拉层上使用轻微投影拉开层级。</p>
+            </div>
+            <div class="spec-card">
+              <b>结构与信息密度</b>
+              <p>列表页以标签导航 + 操作按钮 + 表格为主，行高舒展、列间竖线明确，符合 NAS 控制台在配置任务时的稳定感与可读性。</p>
+            </div>
+            <div class="spec-card">
+              <b>交互状态展示</b>
+              <p>已覆盖选中行、悬停态、三态复选框、选中单选框、日期下拉展开层、模态遮罩和主次按钮层级，便于直接继续实现。</p>
+            </div>
+          </div>
+          <div class="legend">本稿为静态 HTML 单文件展示，已按响应式布局处理：宽屏双栏展示，窄屏自动改为纵向堆叠，并允许表格区域横向滚动。</div>
+        </div>
+      </section>
+    </div>
+  </div>
+</body>
+</html>

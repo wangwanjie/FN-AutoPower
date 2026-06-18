@@ -1,0 +1,30 @@
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node / frontend tooling
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Build outputs
+dist/
+dist-fpk/
+*.fpk
+
+# Local tools and temporary runtime data
+tools/
+*.log
+*.pid
+*.tmp
+
+# Editor and OS metadata
+.idea/
+.vscode/
