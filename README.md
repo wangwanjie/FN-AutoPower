@@ -10,6 +10,16 @@ AutoPower 是一个飞牛 fnOS FPK 应用，用来管理 NAS 自动开机和自�
 - 打包：fnOS `fnpack`
 - 测试：Python `unittest`
 
+## 界面参考
+
+OpenDesign 参考稿来自 `design/fnos-power-schedule-flows.html`：
+
+![OpenDesign 参考界面](docs/images/fnos-power-schedule-flows.png)
+
+当前实现的主界面：
+
+![AutoPower 主界面](docs/images/autopower-main.png)
+
 ## 目录结构
 
 ```text
@@ -17,6 +27,7 @@ src/                    后端服务与调度核心
 web/                    前端页面
 tests/                  单元测试
 fpk/                    fnOS FPK 包模板
+docs/images/            README 截图
 scripts/sync-fpk.sh     同步 src/web 到 fpk/app/AutoPower
 scripts/build-fpk.sh    构建 .fpk
 scripts/create-icons.py 生成 FPK 图标
