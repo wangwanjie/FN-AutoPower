@@ -3,7 +3,17 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from src.autopower_server import AppState, create_schedule, update_schedule
+from src.autopower_server import AppState, AutoPowerHandler, create_schedule, update_schedule
+
+
+class _StubHandler:
+    """Minimal stand-in to exercise path normalization without opening a socket."""
+
+    strip_base_path = AutoPowerHandler.strip_base_path
+
+    def __init__(self, base_path, path):
+        self.base_path = base_path
+        self.path = path
 
 
 class AutoPowerServerTests(unittest.TestCase):
@@ -43,6 +53,38 @@ class AutoPowerServerTests(unittest.TestCase):
             self.assertFalse(updated["enabled"])
             self.assertEqual(updated["hour"], 10)
             self.assertEqual(updated["minute"], 15)
+
+
+class BasePathTests(unittest.TestCase):
+    def test_no_base_path_leaves_path_unchanged(self):
+        handler = _StubHandler("", "/api/state")
+        handler.strip_base_path()
+        self.assertEqual(handler.path, "/api/state")
+
+    def test_strips_prefix_from_api_path(self):
+        handler = _StubHandler("/autopower", "/autopower/api/state")
+        handler.strip_base_path()
+        self.assertEqual(handler.path, "/api/state")
+
+    def test_bare_prefix_maps_to_root(self):
+        handler = _StubHandler("/autopower", "/autopower")
+        handler.strip_base_path()
+        self.assertEqual(handler.path, "/")
+
+    def test_unrelated_prefix_is_not_stripped(self):
+        handler = _StubHandler("/autopower", "/autopowerful/api/state")
+        handler.strip_base_path()
+        self.assertEqual(handler.path, "/autopowerful/api/state")
+
+
+class DesktopConfigTests(unittest.TestCase):
+    def test_desktop_config_declares_category(self):
+        config_path = Path(__file__).resolve().parents[1] / "fpk" / "app" / "ui" / "config"
+        payload = json.loads(config_path.read_text())
+
+        app_config = payload[".url"]["autopower.Application"]
+
+        self.assertEqual(app_config["category"], "system")
 
 
 if __name__ == "__main__":

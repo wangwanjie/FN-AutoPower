@@ -132,12 +132,14 @@ systemctl restart trim_app_center.service
 ```json
 {
   "type": "iframe",
-  "protocol": "http",
+  "protocol": "https",
   "port": "3868",
   "url": "/",
   "allUsers": true
 }
 ```
+
+入口协议必须用 `https`：fnOS 会在应用端口前做 TLS 终止，桌面图标地址按 `${协议}://${当前主机}:${端口}/` 拼接。写成 `http` 时，内网（http 桌面）能开，但公网（https 桌面）会因混合内容被浏览器拦截而打不开。改用 `https` 后内外网都正常，无需额外反代。详见 [docs/REMOTE-ACCESS.md](docs/REMOTE-ACCESS.md)。
 
 ## 系统写入行为
 

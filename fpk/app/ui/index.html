@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>开关机计划</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="app-top">
+        <div class="top-left">
+          <span class="dot" aria-hidden="true"></span>
+          <div>
+            <h1 class="app-title">开关机计划</h1>
+            <p class="app-sub">设置 NAS 自动开机与关机时间</p>
+          </div>
+        </div>
+      </header>
+
+      <section class="toolbar" aria-label="计划操作">
+        <button id="addBtn" class="btn primary">新增计划</button>
+        <button id="editBtn" class="btn">编辑</button>
+        <button id="deleteBtn" class="btn danger">删除</button>
+        <button id="enableBtn" class="btn">启用</button>
+        <button id="disableBtn" class="btn">停用</button>
+        <button id="applyBtn" class="btn">应用计划</button>
+        <button id="testWakeBtn" class="btn ghost">测试开机计划</button>
+      </section>
+
+      <section class="summary" aria-label="计划概览">
+        <div class="metric">
+          <div class="metric-key">总计划数</div>
+          <div id="totalPlans" class="metric-value">0</div>
+        </div>
+        <div class="metric">
+          <div class="metric-key">已启用</div>
+          <div id="enabledPlans" class="metric-value">0</div>
+        </div>
+        <div class="metric">
+          <div class="metric-key">下次执行</div>
+          <div id="nextRun" class="metric-value compact">未读取到计划</div>
+        </div>
+      </section>
+
+      <section class="table-wrap">
+        <div id="emptyState" class="empty hidden">
+          <div class="empty-ico" aria-hidden="true">⏱</div>
+          <h2>还没有开关机计划</h2>
+          <p>创建自动开机或关机规则后，系统会按设定时间执行。适合办公室固定上下班、家庭夜间自动关机等场景。</p>
+          <button id="emptyAddBtn" class="btn primary">新增第一个计划</button>
+        </div>
+
+        <div id="tableScroll" class="table-scroll">
+          <table aria-label="开关机计划表">
+            <thead>
+              <tr>
+                <th class="col-check">
+                  <span class="cell-inline">
+                    <button id="bulkToggle" class="check indeterminate" aria-label="切换全部计划启用状态"></button>
+                    已启动
+                  </span>
+                </th>
+                <th class="col-time">触发时间</th>
+                <th class="col-action">操作</th>
+                <th class="col-status">状态</th>
+              </tr>
+            </thead>
+            <tbody id="scheduleRows"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <footer id="statusLine" class="footnote"></footer>
+    </main>
+
+    <div class="overlay hidden" id="modalBackdrop"></div>
+    <section class="modal hidden" id="scheduleModal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+      <header class="modal-header">
+        <h2 id="modalTitle" class="modal-title">新增计划</h2>
+        <button id="closeModalBtn" class="icon-close" aria-label="关闭">×</button>
+      </header>
+
+      <div class="modal-body">
+        <div class="form-grid">
+          <label class="label">操作：</label>
+          <div class="field">
+            <div class="radio-list">
+              <label class="radio-item">
+                <input type="radio" name="operation" value="wake">
+                <span>开机</span>
+              </label>
+              <label class="radio-item">
+                <input type="radio" name="operation" value="shutdown">
+                <span>关机</span>
+              </label>
+            </div>
+          </div>
+
+          <label class="label" for="daysSelect">日期：</label>
+          <div class="field date-field">
+            <button id="daysButton" class="select wide" type="button">
+              <span id="daysButtonText">每天</span>
+              <span class="caret"></span>
+            </button>
+            <input id="daysSelect" type="hidden" value="daily">
+          </div>
+
+          <label class="label" for="hourSelect">时间：</label>
+          <div class="field">
+            <div class="time-row">
+              <select id="hourSelect" class="select native-select"></select>
+              <span class="colon">:</span>
+              <select id="minuteSelect" class="select native-select"></select>
+            </div>
+          </div>
+
+          <label class="label" for="enabledInput">启用：</label>
+          <div class="field">
+            <label class="check-label">
+              <input id="enabledInput" type="checkbox">
+              <span>创建后立即启用此计划</span>
+            </label>
+          </div>
+        </div>
+
+        <div class="notice">
+          <span class="prefix">注意：</span>
+          开机计划依赖主板 RTC 唤醒能力。若计划未生效，请检查 BIOS/UEFI 与系统电源恢复相关设置。
+        </div>
+      </div>
+
+      <footer class="modal-footer">
+        <button id="cancelBtn" class="btn">取消</button>
+        <button id="saveBtn" class="btn primary">确定</button>
+      </footer>
+
+      <div class="dropdown-layer hidden" id="weekdayMenu" aria-label="日期下拉展开层">
+        <div class="drop-section">
+          <button class="drop-item selected" data-days="daily" type="button">每天</button>
+          <button class="drop-item" data-days="holiday" type="button">假日</button>
+          <button class="drop-item" data-days="weekday" type="button">平日</button>
+          <button class="drop-item" data-days="custom" type="button">指定日期</button>
+        </div>
+        <div class="drop-section weekday-checks">
+          <label class="drop-item"><input type="checkbox" value="6">周日</label>
+          <label class="drop-item"><input type="checkbox" value="0">周一</label>
+          <label class="drop-item"><input type="checkbox" value="1">周二</label>
+          <label class="drop-item"><input type="checkbox" value="2">周三</label>
+          <label class="drop-item"><input type="checkbox" value="3">周四</label>
+          <label class="drop-item"><input type="checkbox" value="4">周五</label>
+          <label class="drop-item"><input type="checkbox" value="5">周六</label>
+        </div>
+      </div>
+    </section>
+
+    <section class="confirm hidden" id="confirmDialog" role="dialog" aria-modal="true" aria-labelledby="confirmTitle">
+      <header class="modal-header">
+        <h2 id="confirmTitle" class="modal-title">删除计划</h2>
+        <button id="closeConfirmBtn" class="icon-close" aria-label="关闭">×</button>
+      </header>
+      <div class="confirm-body">
+        <h3 class="confirm-title">确定要删除这条计划吗？</h3>
+        <p id="confirmMessage" class="confirm-text">删除后将不再执行此计划。此操作不会影响其他已保存的开关机规则。</p>
+      </div>
+      <footer class="modal-footer">
+        <button id="cancelDeleteBtn" class="btn">取消</button>
+        <button id="confirmDeleteBtn" class="btn danger-filled">删除</button>
+      </footer>
+    </section>
+
+    <script src="app.js"></script>
+  </body>
+</html>

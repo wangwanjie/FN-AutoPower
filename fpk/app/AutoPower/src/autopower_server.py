@@ -244,12 +244,26 @@ def public_state(state: AppState):
 class AutoPowerHandler(SimpleHTTPRequestHandler):
     state = None
     web_dir = DEFAULT_WEB_DIR
+    base_path = ""
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(self.web_dir), **kwargs)
 
     def log_message(self, fmt, *args):
         sys.stderr.write("[autopower] " + fmt % args + "\n")
+
+    def strip_base_path(self):
+        """Remove a reverse-proxy mount prefix (e.g. /autopower) so routing and
+        static file serving keep working when the proxy does not strip it."""
+        prefix = self.base_path
+        if not prefix:
+            return
+        path = self.path
+        if path == prefix:
+            self.path = "/"
+            return
+        if path.startswith(prefix + "/"):
+            self.path = path[len(prefix):]
 
     def read_json(self):
         length = int(self.headers.get("Content-Length", "0"))
@@ -316,6 +330,7 @@ class AutoPowerHandler(SimpleHTTPRequestHandler):
             self.send_json({"error": str(exc)}, status=500)
 
     def do_GET(self):
+        self.strip_base_path()
         if self.path.startswith("/api/"):
             self.handle_api("GET")
             return
@@ -324,12 +339,15 @@ class AutoPowerHandler(SimpleHTTPRequestHandler):
         super().do_GET()
 
     def do_POST(self):
+        self.strip_base_path()
         self.handle_api("POST")
 
     def do_PUT(self):
+        self.strip_base_path()
         self.handle_api("PUT")
 
     def do_DELETE(self):
+        self.strip_base_path()
         self.handle_api("DELETE")
 
 
@@ -339,6 +357,11 @@ def parse_args():
     parser.add_argument("--port", type=int, default=int(os.environ.get("AUTOPOWER_PORT", "3868")))
     parser.add_argument("--data-dir", default=os.environ.get("AUTOPOWER_DATA_DIR", str(DEFAULT_DATA_DIR)))
     parser.add_argument("--web-dir", default=os.environ.get("AUTOPOWER_WEB_DIR", str(DEFAULT_WEB_DIR)))
+    parser.add_argument(
+        "--base-path",
+        default=os.environ.get("AUTOPOWER_BASE_PATH", ""),
+        help="反向代理挂载前缀，例如 /autopower。仅当代理不剥离前缀时才需要设置。",
+    )
     parser.add_argument("--print-next-wake", action="store_true")
     return parser.parse_args()
 
@@ -354,6 +377,7 @@ def main():
 
     AutoPowerHandler.state = state
     AutoPowerHandler.web_dir = Path(args.web_dir)
+    AutoPowerHandler.base_path = "/" + args.base_path.strip("/") if args.base_path.strip("/") else ""
     server = ThreadingHTTPServer((args.host, args.port), AutoPowerHandler)
     print(f"AutoPower listening on http://{args.host}:{args.port}", flush=True)
     server.serve_forever()

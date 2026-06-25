@@ -51,6 +51,13 @@ function initTimeSelects() {
   }
 }
 
+// API 基址：相对当前文档目录解析，使应用在站点根目录（如 http://nas:3868/）
+// 与反向代理子路径（如 https://nas.example.com/autopower/）下都能正常请求接口。
+const API_ROOT = new URL(".", document.baseURI);
+function apiUrl(path) {
+  return new URL(String(path).replace(/^\//, ""), API_ROOT).href;
+}
+
 async function requestJson(url, options = {}) {
   const response = await fetch(url, {
     ...options,
@@ -179,7 +186,7 @@ function render() {
 }
 
 async function loadState() {
-  const payload = await requestJson("/api/state");
+  const payload = await requestJson(apiUrl("api/state"));
   state.schedules = payload.schedules;
   if (!state.selectedId && state.schedules[0]) {
     state.selectedId = state.schedules[0].id;
@@ -189,7 +196,7 @@ async function loadState() {
 }
 
 async function saveSchedule(id, schedule) {
-  await requestJson(`/api/schedules/${encodeURIComponent(id)}`, {
+  await requestJson(apiUrl(`api/schedules/${encodeURIComponent(id)}`), {
     method: "PUT",
     body: JSON.stringify(schedule),
   });
@@ -267,7 +274,7 @@ async function saveModal() {
     const existing = state.schedules.find((schedule) => schedule.id === state.editingId);
     await saveSchedule(state.editingId, { ...existing, ...payload });
   } else {
-    const created = await requestJson("/api/schedules", {
+    const created = await requestJson(apiUrl("api/schedules"), {
       method: "POST",
       body: JSON.stringify(payload),
     });
@@ -296,7 +303,7 @@ async function confirmDeleteSelected() {
     closeConfirm();
     return;
   }
-  await requestJson(`/api/schedules/${encodeURIComponent(schedule.id)}`, { method: "DELETE" });
+  await requestJson(apiUrl(`api/schedules/${encodeURIComponent(schedule.id)}`), { method: "DELETE" });
   state.selectedId = null;
   closeConfirm();
   await loadState();
@@ -310,7 +317,7 @@ async function setSelectedEnabled(enabled) {
 
 async function setAllEnabled(enabled) {
   for (const schedule of state.schedules) {
-    await requestJson(`/api/schedules/${encodeURIComponent(schedule.id)}`, {
+    await requestJson(apiUrl(`api/schedules/${encodeURIComponent(schedule.id)}`), {
       method: "PUT",
       body: JSON.stringify({ ...schedule, enabled }),
     });
@@ -321,7 +328,7 @@ async function setAllEnabled(enabled) {
 async function applyPlans() {
   setStatus("正在应用计划...");
   try {
-    const payload = await requestJson("/api/apply", { method: "POST", body: "{}" });
+    const payload = await requestJson(apiUrl("api/apply"), { method: "POST", body: "{}" });
     const wakeText = payload.nextWake ? `下次开机: ${formatShanghaiTime(payload.nextWake)}` : "未启用开机计划";
     if (payload.ok === false) {
       setStatus(`应用计划失败 · ${wakeText} · ${payload.error || "请检查系统权限"}`, payload.status);
@@ -336,7 +343,7 @@ async function applyPlans() {
 async function testWake() {
   setStatus("正在测试开机计划...");
   try {
-    const payload = await requestJson("/api/test-wake", { method: "POST", body: "{}" });
+    const payload = await requestJson(apiUrl("api/test-wake"), { method: "POST", body: "{}" });
     const prefix = payload.nextWake ? `下一次开机: ${formatShanghaiTime(payload.nextWake)} (东八区)` : "未启用开机计划";
     if (payload.ok === false) {
       setStatus(`${prefix} · 写入失败: ${payload.error || "请检查 RTC 权限"}`, payload.status);

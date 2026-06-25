@@ -32,7 +32,7 @@ case "${1:-}" in
     fi
     cd "$APP_DIR"
     AUTOPOWER_DATA_DIR="$DATA_DIR" AUTOPOWER_WEB_DIR="$APP_DIR/web" AUTOPOWER_PORT="$PORT" \
-      nohup python3 "$APP_DIR/src/autopower_server.py" --host 0.0.0.0 --port "$PORT" --data-dir "$DATA_DIR" --web-dir "$APP_DIR/web" \
+      nohup python3 "$APP_DIR/src/autopower_server.py" --host 127.0.0.1 --port "$PORT" --data-dir "$DATA_DIR" --web-dir "$APP_DIR/web" \
       >> "$LOG_FILE" 2>&1 &
     echo $! > "$PID_FILE"
     ;;
