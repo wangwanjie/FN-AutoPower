@@ -78,13 +78,11 @@ class BasePathTests(unittest.TestCase):
 
 
 class DesktopConfigTests(unittest.TestCase):
-    def test_desktop_config_declares_category(self):
-        config_path = Path(__file__).resolve().parents[1] / "fpk" / "app" / "ui" / "config"
-        payload = json.loads(config_path.read_text())
+    def test_manifest_declares_app_category(self):
+        manifest_path = Path(__file__).resolve().parents[1] / "fpk" / "manifest"
+        manifest_text = manifest_path.read_text()
 
-        app_config = payload[".url"]["autopower.Application"]
-
-        self.assertEqual(app_config["category"], "system")
+        self.assertIn("category              = system", manifest_text)
 
 
 if __name__ == "__main__":

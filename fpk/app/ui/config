@@ -3,7 +3,6 @@
         "autopower.Application": {
             "title": "自动开关机",
             "desc": "开关机计划管理",
-            "category": "system",
             "icon": "images/icon_{0}.png",
             "type": "iframe",
             "protocol": "http",
