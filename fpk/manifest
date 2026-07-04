@@ -1,5 +1,5 @@
 appname               = autopower
-version               = 1.0.8
+version               = 1.0.9
 display_name          = 自动开关机
 desc                  = 群晖风格的开关机计划管理工具，支持每天、平日、假日和指定星期的自动开机与自动关机计划。
 arch                  = x86_64
