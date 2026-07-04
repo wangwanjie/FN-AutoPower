@@ -23,11 +23,11 @@ class AutoPowerServerTests(unittest.TestCase):
 
             data = state.load()
 
-            self.assertEqual(len(data["schedules"]), 2)
+            # 默认只允许有开机计划，绝不能内置关机计划（会造成未配置也定时关机）
+            self.assertEqual(len(data["schedules"]), 1)
             self.assertEqual(data["schedules"][0]["operation"], "wake")
             self.assertEqual(data["schedules"][0]["hour"], 15)
-            self.assertEqual(data["schedules"][1]["operation"], "shutdown")
-            self.assertEqual(data["schedules"][1]["hour"], 20)
+            self.assertFalse(any(s["operation"] == "shutdown" for s in data["schedules"]))
 
     def test_create_schedule_persists_valid_plan(self):
         with tempfile.TemporaryDirectory() as temp_dir:

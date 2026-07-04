@@ -3,6 +3,7 @@ import argparse
 import datetime as dt
 import json
 import os
+import shutil
 import subprocess
 import sys
 import uuid
@@ -39,6 +40,8 @@ WAKEALARM_PATH = Path("/sys/class/rtc/rtc0/wakealarm")
 
 
 def default_schedules():
+    # 默认只提供一条开机示例计划。绝不能默认带关机计划：用户没有主动
+    # 配置过关机时，应用后 crontab 里出现 poweroff 会造成机器"莫名其妙关机"。
     return [
         {
             "id": "wake-daily-1500",
@@ -47,15 +50,6 @@ def default_schedules():
             "days": "daily",
             "weekdays": [0, 1, 2, 3, 4, 5, 6],
             "hour": 15,
-            "minute": 0,
-        },
-        {
-            "id": "shutdown-daily-2000",
-            "enabled": True,
-            "operation": "shutdown",
-            "days": "daily",
-            "weekdays": [0, 1, 2, 3, 4, 5, 6],
-            "hour": 20,
             "minute": 0,
         },
     ]
@@ -158,8 +152,14 @@ def write_wake_script(data_dir: Path):
 set -euo pipefail
 NEXT=$({sys.executable} "{Path(__file__).resolve()}" --data-dir "{data_dir}" --print-next-wake)
 if [ -n "$NEXT" ]; then
-  echo 0 > "{WAKEALARM_PATH}"
-  echo "$NEXT" > "{WAKEALARM_PATH}"
+  # rtcwake 会根据 /etc/adjtime 处理硬件时钟为 localtime 的情况；
+  # 直接写 sysfs 则假定 RTC 为 UTC，在 RTC 走本地时间的机器上会差时区。
+  if command -v rtcwake >/dev/null 2>&1; then
+    rtcwake -m no -t "$NEXT"
+  else
+    echo 0 > "{WAKEALARM_PATH}"
+    echo "$NEXT" > "{WAKEALARM_PATH}"
+  fi
   logger "AutoPower RTC wake set to $(date -d @$NEXT '+%Y-%m-%d %H:%M:%S')"
 fi
 """
@@ -169,10 +169,12 @@ fi
 
 def install_systemd_service(data_dir: Path):
     write_wake_script(data_dir)
+    # 依赖 systemd 默认依赖（Conflicts=shutdown.target + Before=shutdown.target），
+    # 保证关机流程会有序 stop 本服务从而执行 ExecStop 写入 RTC 闹钟。
+    # 之前写了 DefaultDependencies=no 却没补 Conflicts=shutdown.target，
+    # 导致关机时 ExecStop 根本不运行，唤醒闹钟从未设置。
     service = f"""[Unit]
 Description=AutoPower RTC wakeup alarm before shutdown
-DefaultDependencies=no
-Before=shutdown.target
 
 [Service]
 Type=oneshot
@@ -194,8 +196,13 @@ def write_next_wake(schedules):
         if WAKEALARM_PATH.exists():
             WAKEALARM_PATH.write_text("0\n", encoding="utf-8")
         return None
-    WAKEALARM_PATH.write_text("0\n", encoding="utf-8")
-    WAKEALARM_PATH.write_text(f"{timestamp}\n", encoding="utf-8")
+    rtcwake = shutil.which("rtcwake")
+    if rtcwake:
+        # rtcwake 依据 /etc/adjtime 兼容硬件时钟为 localtime 的机器
+        run_command([rtcwake, "-m", "no", "-t", str(timestamp)])
+    else:
+        WAKEALARM_PATH.write_text("0\n", encoding="utf-8")
+        WAKEALARM_PATH.write_text(f"{timestamp}\n", encoding="utf-8")
     return timestamp
 
 
@@ -229,6 +236,27 @@ def apply_system_state(state: AppState):
     install_systemd_service(state.data_dir)
     wake_timestamp = write_next_wake(schedules)
     return {"ok": True, "nextWake": wake_timestamp, "status": read_status()}
+
+
+def sync_system_state(state: AppState):
+    """计划增删改后立即同步 crontab 与 RTC 闹钟（尽力而为）。
+
+    之前只有点"应用"才会重写 crontab：在界面删除关机计划后，
+    crontab 里残留的 poweroff 行仍会继续定时关机。
+    """
+    warnings = []
+    schedules = state.load()["schedules"]
+    try:
+        install_crontab(schedules)
+    except Exception as exc:
+        warnings.append(f"crontab sync failed: {exc}")
+    try:
+        write_next_wake(schedules)
+    except Exception as exc:
+        warnings.append(f"wakealarm sync failed: {exc}")
+    for warning in warnings:
+        sys.stderr.write(f"[autopower] {warning}\n")
+    return warnings
 
 
 def public_state(state: AppState):
@@ -290,13 +318,19 @@ class AutoPowerHandler(SimpleHTTPRequestHandler):
                 self.send_json(public_state(self.state))
                 return
             if method == "POST" and parts == ["api", "schedules"]:
-                self.send_json(create_schedule(self.state, self.read_json()), status=201)
+                created = create_schedule(self.state, self.read_json())
+                sync_system_state(self.state)
+                self.send_json(created, status=201)
                 return
             if method == "PUT" and len(parts) == 3 and parts[:2] == ["api", "schedules"]:
-                self.send_json(update_schedule(self.state, parts[2], self.read_json()))
+                updated = update_schedule(self.state, parts[2], self.read_json())
+                sync_system_state(self.state)
+                self.send_json(updated)
                 return
             if method == "DELETE" and len(parts) == 3 and parts[:2] == ["api", "schedules"]:
-                self.send_json(delete_schedule(self.state, parts[2]))
+                deleted = delete_schedule(self.state, parts[2])
+                sync_system_state(self.state)
+                self.send_json(deleted)
                 return
             if method == "POST" and parts == ["api", "apply"]:
                 try:
