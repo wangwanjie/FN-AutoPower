@@ -28,3 +28,4 @@ tools/
 # Editor and OS metadata
 .idea/
 .vscode/
+store/

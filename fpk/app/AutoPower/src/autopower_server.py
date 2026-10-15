@@ -277,15 +277,23 @@ def sync_system_state(state: AppState):
     return warnings
 
 
-def refresh_wake_script(data_dir: Path):
-    """服务启动时重写唤醒脚本：升级或迁移存储卷后应用路径可能变化，
-    旧脚本里的绝对路径会失效，导致关机前无法设置 RTC 闹钟。"""
-    if not SYSTEM_WRITES_ENABLED or not SYSTEMD_SERVICE.exists():
-        return
+def restore_system_state(state: AppState):
+    """服务启动时重新应用已保存的计划。
+
+    飞牛升级应用时会先执行旧版本的卸载脚本，可能把 crontab 托管区、
+    唤醒服务和 RTC 闹钟一并清掉；升级或迁移存储卷后应用路径也可能变化，
+    旧唤醒脚本里的绝对路径会失效。启动时按 schedules.json 重新应用一次，
+    保证升级后计划照常生效。从未保存过计划（全新安装）时不写入系统。
+    """
+    if not SYSTEM_WRITES_ENABLED or not state.path.exists():
+        return None
     try:
-        write_wake_script(data_dir)
-    except OSError as exc:
-        sys.stderr.write(f"[autopower] refresh wake script failed: {exc}\n")
+        result = apply_system_state(state)
+        sys.stderr.write(f"[autopower] restored system state on start, next wake: {result['nextWake']}\n")
+        return result
+    except Exception as exc:
+        sys.stderr.write(f"[autopower] restore system state failed: {exc}\n")
+        return None
 
 
 def describe_event(event):
@@ -469,7 +477,7 @@ def main():
             print(timestamp)
         return
 
-    refresh_wake_script(state.data_dir)
+    restore_system_state(state)
     AutoPowerHandler.state = state
     AutoPowerHandler.web_dir = Path(args.web_dir)
     AutoPowerHandler.base_path = "/" + args.base_path.strip("/") if args.base_path.strip("/") else ""

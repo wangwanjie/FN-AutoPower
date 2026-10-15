@@ -3,6 +3,12 @@ set -e
 
 # 卸载前清理本应用写入系统的内容：唤醒服务/脚本、root crontab 托管区、RTC 闹钟
 
+# 飞牛升级应用时也会执行旧版本的卸载脚本。升级时保留计划，不做清理；
+# 即使这里判断不到，新版本启动时也会按已保存的计划重新写入系统。
+if [ "${TRIM_APP_STATUS:-}" = "UPGRADE" ]; then
+  exit 0
+fi
+
 SERVICE="/etc/systemd/system/autopower-rtc-wake.service"
 WAKE_SCRIPT="/usr/local/bin/autopower-set-next-wake.sh"
 

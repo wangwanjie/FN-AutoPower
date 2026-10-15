@@ -115,6 +115,48 @@ class SystemWriteGuardTests(unittest.TestCase):
             self.assertEqual(len(warnings), 2)
 
 
+class RestoreSystemStateTests(unittest.TestCase):
+    def test_restores_saved_plans_on_start(self):
+        from unittest import mock
+
+        from src import autopower_server
+
+        with tempfile.TemporaryDirectory() as temp_dir, \
+                mock.patch.object(autopower_server, "SYSTEM_WRITES_ENABLED", True), \
+                mock.patch.object(autopower_server, "apply_system_state", return_value={"nextWake": 1}) as apply:
+            state = AppState(Path(temp_dir))
+            create_schedule(state, {"operation": "wake", "days": "daily", "hour": 8, "minute": 0})
+
+            autopower_server.restore_system_state(state)
+
+            apply.assert_called_once_with(state)
+
+    def test_fresh_install_does_not_touch_system(self):
+        from unittest import mock
+
+        from src import autopower_server
+
+        with tempfile.TemporaryDirectory() as temp_dir, \
+                mock.patch.object(autopower_server, "SYSTEM_WRITES_ENABLED", True), \
+                mock.patch.object(autopower_server, "apply_system_state") as apply:
+            # 没有 schedules.json：全新安装，不应自动写入系统
+            self.assertIsNone(autopower_server.restore_system_state(AppState(Path(temp_dir))))
+            apply.assert_not_called()
+
+    def test_apply_failure_does_not_block_startup(self):
+        from unittest import mock
+
+        from src import autopower_server
+
+        with tempfile.TemporaryDirectory() as temp_dir, \
+                mock.patch.object(autopower_server, "SYSTEM_WRITES_ENABLED", True), \
+                mock.patch.object(autopower_server, "apply_system_state", side_effect=RuntimeError("boom")):
+            state = AppState(Path(temp_dir))
+            create_schedule(state, {"operation": "wake", "days": "daily", "hour": 8, "minute": 0})
+
+            self.assertIsNone(autopower_server.restore_system_state(state))
+
+
 class DesktopConfigTests(unittest.TestCase):
     def test_manifest_declares_app_category(self):
         manifest_path = Path(__file__).resolve().parents[1] / "fpk" / "manifest"

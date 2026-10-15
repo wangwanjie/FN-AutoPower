@@ -2,7 +2,7 @@
 
 AutoPower（自动开关机）是一个飞牛 fnOS FPK 应用，用来管理 NAS 自动开机和自动关机计划。界面参考 `design/fnos-power-schedule-flows.html` 的 fnOS 风格，底层使用 RTC wakealarm、systemd shutdown hook 和 root crontab 实现。
 
-- 支持平台：fnOS x86 / ARM（纯 Python + Bash，无原生二进制，依赖系统自带的 `python3` 与 `curl`）
+- 支持平台：fnOS x86（纯 Python + Bash，依赖系统自带的 `python3` 与 `curl`；ARM 未实机验证）
 - 开源协议：[MIT](LICENSE)
 - 更新日志：[CHANGELOG.md](CHANGELOG.md)
 
@@ -38,6 +38,7 @@ docs/STORE-SUBMISSION.md 飞牛应用中心上架材料与自查清单
 scripts/sync-fpk.sh     同步 src 到 fpk/app/AutoPower/src，web 到 fpk/app/ui
 scripts/check-fpk.sh    打包前自检（manifest、图标、JSON、生命周期脚本、单元测试）
 scripts/build-fpk.sh    自检并构建 .fpk
+scripts/build-store.sh  汇总上架材料到 store/（构建产物，不提交）
 scripts/create-icons.py 重新生成图标（需要 Pillow，仅改图标设计时运行）
 design/                 OpenDesign 参考稿
 ```
