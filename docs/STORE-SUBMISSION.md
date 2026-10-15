@@ -60,5 +60,6 @@
 手动安装测试也可以用命令行：
 
 ```bash
-appcenter-cli install-fpk autopower-1.1.0.fpk
+# 覆盖升级用 install-fpk；不要先卸载。-v 1 指定安装卷，CLI 默认卷未设置时必须带
+appcenter-cli install-fpk autopower-<version>.fpk -v 1
 ```
