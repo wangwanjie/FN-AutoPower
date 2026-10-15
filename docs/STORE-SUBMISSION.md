@@ -57,9 +57,13 @@
 - [ ] 卸载后 crontab 托管区、`/etc/systemd/system/autopower-rtc-wake.service`、`/usr/local/bin/autopower-set-next-wake.sh` 都已删除，`/sys/class/rtc/rtc0/wakealarm` 为空
 - [ ] 未登录直接访问 `/cgi/ThirdParty/autopower/index.cgi/api/state` 被拒绝
 
-手动安装测试也可以用命令行：
+安装方式：
+
+- **升级已安装的版本**：只能在网页端「应用中心 → 手动安装」上传 `.fpk`。实测 `appcenter-cli install-fpk` 遇到已安装的应用会提示 “is installed” 并跳过，`appcenter-cli uninstall` 也会要求去网页端操作
+- **全新安装**（机器上没有该应用）可以用命令行，`-v 1` 指定安装卷（CLI 默认卷未设置时不带会报 “Volume is unavailable”）：
 
 ```bash
-# 覆盖升级用 install-fpk；不要先卸载。-v 1 指定安装卷，CLI 默认卷未设置时必须带
 appcenter-cli install-fpk autopower-<version>.fpk -v 1
 ```
+
+不要用 `appcenter-cli install-local` 升级：它会先删掉旧版本，安装失败时应用直接消失。
