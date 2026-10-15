@@ -99,6 +99,22 @@ def next_wake_timestamp(schedules: Iterable[Dict], now: Optional[dt.datetime] = 
     return int(min(candidates).timestamp())
 
 
+def next_event(schedules: Iterable[Dict], now: Optional[dt.datetime] = None) -> Optional[Dict]:
+    """返回所有启用计划中时间上最近的一次执行（开机或关机）。"""
+    best = None
+    for schedule in schedules:
+        valid = validate_schedule(schedule)
+        if not valid["enabled"]:
+            continue
+        when = next_occurrence(valid, now)
+        if best is None or when < best[0]:
+            best = (when, valid)
+    if best is None:
+        return None
+    when, valid = best
+    return {"id": valid["id"], "operation": valid["operation"], "timestamp": int(when.timestamp())}
+
+
 def cron_weekday_field(weekdays: List[int]) -> str:
     if weekdays == DAY_PRESETS["daily"]:
         return "*"

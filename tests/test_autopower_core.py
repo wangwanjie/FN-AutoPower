@@ -3,6 +3,7 @@ import unittest
 
 from src.autopower_core import (
     ScheduleValidationError,
+    next_event,
     next_occurrence,
     next_wake_timestamp,
     render_managed_crontab,
@@ -97,6 +98,25 @@ class AutoPowerCoreTests(unittest.TestCase):
     def test_invalid_schedule_rejects_bad_time(self):
         with self.assertRaises(ScheduleValidationError):
             validate_schedule({"operation": "wake", "days": "daily", "hour": 24, "minute": 0})
+
+
+class NextEventTests(unittest.TestCase):
+    def test_picks_soonest_enabled_event_regardless_of_order(self):
+        now = dt.datetime(2026, 6, 18, 12, 0, tzinfo=dt.timezone.utc)
+        schedules = [
+            {"id": "late-wake", "enabled": True, "operation": "wake", "days": "daily", "hour": 20, "minute": 0},
+            {"id": "disabled", "enabled": False, "operation": "wake", "days": "daily", "hour": 12, "minute": 30},
+            {"id": "soon-off", "enabled": True, "operation": "shutdown", "days": "daily", "hour": 13, "minute": 0},
+        ]
+
+        event = next_event(schedules, now)
+
+        self.assertEqual(event["id"], "soon-off")
+        self.assertEqual(event["operation"], "shutdown")
+        self.assertEqual(event["timestamp"], int(dt.datetime(2026, 6, 18, 13, 0, tzinfo=dt.timezone.utc).timestamp()))
+
+    def test_returns_none_without_enabled_schedules(self):
+        self.assertIsNone(next_event([{"enabled": False, "operation": "wake", "hour": 1, "minute": 0}]))
 
 
 if __name__ == "__main__":

@@ -3,9 +3,11 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 OUT_DIR="${FPK_OUT_DIR:-$ROOT_DIR/dist-fpk}"
-VERSION="${FPK_VERSION:-1.0.0}"
+MANIFEST_VERSION="$(awk -F '=' '/^version[[:space:]]*=/{gsub(/[[:space:]]/, "", $2); print $2}' "$ROOT_DIR/fpk/manifest")"
+VERSION="${FPK_VERSION:-$MANIFEST_VERSION}"
 
 "$ROOT_DIR/scripts/sync-fpk.sh"
+"$ROOT_DIR/scripts/check-fpk.sh"
 mkdir -p "$OUT_DIR"
 
 if [ -n "${FNPACK_BIN:-}" ]; then

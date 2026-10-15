@@ -1,3 +1,34 @@
 #!/bin/bash
 set -e
+
+# 卸载前清理本应用写入系统的内容：唤醒服务/脚本、root crontab 托管区、RTC 闹钟
+
+SERVICE="/etc/systemd/system/autopower-rtc-wake.service"
+WAKE_SCRIPT="/usr/local/bin/autopower-set-next-wake.sh"
+
+if command -v systemctl >/dev/null 2>&1; then
+  systemctl stop autopower-rtc-wake.service 2>/dev/null || true
+  systemctl disable autopower-rtc-wake.service 2>/dev/null || true
+fi
+rm -f "$SERVICE" "$WAKE_SCRIPT"
+
+# 清除本应用设置的 RTC 唤醒闹钟，避免卸载后机器仍被定时唤醒
+if [ -w /sys/class/rtc/rtc0/wakealarm ]; then
+  echo 0 > /sys/class/rtc/rtc0/wakealarm 2>/dev/null || true
+fi
+if command -v systemctl >/dev/null 2>&1; then
+  systemctl daemon-reload 2>/dev/null || true
+fi
+
+if command -v crontab >/dev/null 2>&1; then
+  tmp="$(mktemp)"
+  crontab -l 2>/dev/null | awk '
+    $0 == "# BEGIN AUTOPOWER" {skip=1; next}
+    $0 == "# END AUTOPOWER" {skip=0; next}
+    skip != 1 {print}
+  ' > "$tmp" || true
+  crontab "$tmp" 2>/dev/null || true
+  rm -f "$tmp"
+fi
+
 exit 0

@@ -1,9 +1,10 @@
+import io
 import json
 import tempfile
 import unittest
 from pathlib import Path
 
-from src.autopower_server import AppState, AutoPowerHandler, create_schedule, update_schedule
+from src.autopower_server import ApiError, AppState, AutoPowerHandler, create_schedule, update_schedule
 
 
 class _StubHandler:
@@ -75,6 +76,43 @@ class BasePathTests(unittest.TestCase):
         handler = _StubHandler("/autopower", "/autopowerful/api/state")
         handler.strip_base_path()
         self.assertEqual(handler.path, "/autopowerful/api/state")
+
+
+class _JsonStub:
+    read_json = AutoPowerHandler.read_json
+
+    def __init__(self, content_type, body=b"{}"):
+        self.headers = {"Content-Type": content_type, "Content-Length": str(len(body))}
+        self.rfile = io.BytesIO(body)
+
+
+class ReadJsonTests(unittest.TestCase):
+    def test_accepts_json_content_type(self):
+        self.assertEqual(_JsonStub("application/json; charset=utf-8", b'{"a": 1}').read_json(), {"a": 1})
+
+    def test_rejects_form_content_types_to_block_csrf(self):
+        for content_type in ("text/plain", "application/x-www-form-urlencoded", ""):
+            with self.assertRaises(ApiError) as ctx:
+                _JsonStub(content_type).read_json()
+            self.assertEqual(ctx.exception.status, 415)
+
+
+class SystemWriteGuardTests(unittest.TestCase):
+    def test_sync_is_noop_when_system_writes_disabled(self):
+        from unittest import mock
+
+        from src import autopower_server
+
+        with tempfile.TemporaryDirectory() as temp_dir, \
+                mock.patch.object(autopower_server, "SYSTEM_WRITES_ENABLED", False), \
+                mock.patch.object(autopower_server.subprocess, "run") as run:
+            state = AppState(Path(temp_dir))
+            create_schedule(state, {"operation": "shutdown", "days": "daily", "hour": 1, "minute": 0})
+
+            warnings = autopower_server.sync_system_state(state)
+
+            run.assert_not_called()
+            self.assertEqual(len(warnings), 2)
 
 
 class DesktopConfigTests(unittest.TestCase):

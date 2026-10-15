@@ -1,5 +1,6 @@
 const state = {
   schedules: [],
+  nextEvent: null,
   selectedId: null,
   editingId: null,
 };
@@ -66,9 +67,14 @@ async function requestJson(url, options = {}) {
       ...(options.headers || {}),
     },
   });
-  const payload = await response.json();
+  let payload = null;
+  try {
+    payload = await response.json();
+  } catch (error) {
+    throw new Error(response.ok ? "服务返回了无法解析的数据" : `服务不可用（HTTP ${response.status}），请确认应用已启动`);
+  }
   if (!response.ok) {
-    throw new Error(payload.error || "请求失败");
+    throw new Error(payload.error || `请求失败（HTTP ${response.status}）`);
   }
   return payload;
 }
@@ -84,10 +90,10 @@ function setStatus(message, status) {
   statusEl.textContent = status ? `${message} · ${statusText(status)}` : message;
 }
 
-function formatShanghaiTime(timestamp) {
+// 以浏览器本地时区显示；NAS 与浏览器通常同处一个时区。
+function formatTime(timestamp) {
   if (!timestamp) return "";
   return new Intl.DateTimeFormat("zh-CN", {
-    timeZone: "Asia/Shanghai",
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
@@ -112,10 +118,9 @@ function formatTrigger(schedule) {
 }
 
 function nextRunText() {
-  const enabled = state.schedules.filter((schedule) => schedule.enabled);
-  if (!enabled.length) return "暂无启用计划";
-  const first = enabled[0];
-  return `${first.trigger || formatTrigger(first)} ${operationText(first.operation)}`;
+  const event = state.nextEvent;
+  if (!event) return "暂无启用计划";
+  return `${event.localTime} ${operationText(event.operation)}`;
 }
 
 function updateMetrics() {
@@ -150,10 +155,10 @@ function render() {
     const checkbox = document.createElement("button");
     checkbox.className = `check ${schedule.enabled ? "checked" : ""}`;
     checkbox.setAttribute("aria-label", "切换启用状态");
-    checkbox.addEventListener("click", async (event) => {
+    checkbox.addEventListener("click", guarded(async (event) => {
       event.stopPropagation();
       await saveSchedule(schedule.id, { ...schedule, enabled: !schedule.enabled });
-    });
+    }));
     checkWrap.append(checkbox);
     enabledTd.append(checkWrap);
 
@@ -168,9 +173,9 @@ function render() {
     select.append(option("shutdown", "关机"));
     select.value = schedule.operation;
     select.addEventListener("click", (event) => event.stopPropagation());
-    select.addEventListener("change", async () => {
+    select.addEventListener("change", guarded(async () => {
       await saveSchedule(schedule.id, { ...schedule, operation: select.value });
-    });
+    }));
     operationTd.append(select);
 
     const statusTd = document.createElement("td");
@@ -188,6 +193,10 @@ function render() {
 async function loadState() {
   const payload = await requestJson(apiUrl("api/state"));
   state.schedules = payload.schedules;
+  state.nextEvent = payload.nextEvent || null;
+  if (state.selectedId && !state.schedules.some((schedule) => schedule.id === state.selectedId)) {
+    state.selectedId = null;
+  }
   if (!state.selectedId && state.schedules[0]) {
     state.selectedId = state.schedules[0].id;
   }
@@ -238,6 +247,7 @@ function openModal(id = null) {
     enabled: true,
   };
   modalTitle.textContent = id ? "编辑计划" : "新增计划";
+  document.querySelector("#enabledHint").textContent = id ? "启用此计划" : "创建后立即启用此计划";
   document.querySelector(`input[name="operation"][value="${schedule.operation}"]`).checked = true;
   setDays(schedule.days || "daily", schedule.weekdays || dayDefaults[schedule.days] || dayDefaults.daily);
   hourSelect.value = String(schedule.hour);
@@ -270,6 +280,10 @@ function modalPayload() {
 
 async function saveModal() {
   const payload = modalPayload();
+  if (payload.days === "custom" && payload.weekdays.length === 0) {
+    setStatus("请至少选择一个星期");
+    return;
+  }
   if (state.editingId) {
     const existing = state.schedules.find((schedule) => schedule.id === state.editingId);
     await saveSchedule(state.editingId, { ...existing, ...payload });
@@ -329,7 +343,7 @@ async function applyPlans() {
   setStatus("正在应用计划...");
   try {
     const payload = await requestJson(apiUrl("api/apply"), { method: "POST", body: "{}" });
-    const wakeText = payload.nextWake ? `下次开机: ${formatShanghaiTime(payload.nextWake)}` : "未启用开机计划";
+    const wakeText = payload.nextWake ? `下次开机: ${formatTime(payload.nextWake)}` : "未启用开机计划";
     if (payload.ok === false) {
       setStatus(`应用计划失败 · ${wakeText} · ${payload.error || "请检查系统权限"}`, payload.status);
       return;
@@ -344,7 +358,7 @@ async function testWake() {
   setStatus("正在测试开机计划...");
   try {
     const payload = await requestJson(apiUrl("api/test-wake"), { method: "POST", body: "{}" });
-    const prefix = payload.nextWake ? `下一次开机: ${formatShanghaiTime(payload.nextWake)} (东八区)` : "未启用开机计划";
+    const prefix = payload.nextWake ? `下一次开机: ${formatTime(payload.nextWake)}` : "未启用开机计划";
     if (payload.ok === false) {
       setStatus(`${prefix} · 写入失败: ${payload.error || "请检查 RTC 权限"}`, payload.status);
       return;
@@ -355,6 +369,17 @@ async function testWake() {
   }
 }
 
+// 包装异步事件处理：任何接口失败都在底部状态栏提示，而不是静默吞掉。
+function guarded(handler) {
+  return async (...args) => {
+    try {
+      await handler(...args);
+    } catch (error) {
+      setStatus(`操作失败: ${error.message}`);
+    }
+  };
+}
+
 function wireEvents() {
   document.querySelector("#addBtn").addEventListener("click", () => openModal());
   document.querySelector("#emptyAddBtn").addEventListener("click", () => openModal());
@@ -363,20 +388,20 @@ function wireEvents() {
     if (schedule) openModal(schedule.id);
   });
   document.querySelector("#deleteBtn").addEventListener("click", openConfirm);
-  document.querySelector("#enableBtn").addEventListener("click", () => setSelectedEnabled(true));
-  document.querySelector("#disableBtn").addEventListener("click", () => setSelectedEnabled(false));
+  document.querySelector("#enableBtn").addEventListener("click", guarded(() => setSelectedEnabled(true)));
+  document.querySelector("#disableBtn").addEventListener("click", guarded(() => setSelectedEnabled(false)));
   document.querySelector("#applyBtn").addEventListener("click", applyPlans);
   document.querySelector("#testWakeBtn").addEventListener("click", testWake);
   document.querySelector("#closeModalBtn").addEventListener("click", closeModal);
   document.querySelector("#cancelBtn").addEventListener("click", closeModal);
-  document.querySelector("#saveBtn").addEventListener("click", saveModal);
+  document.querySelector("#saveBtn").addEventListener("click", guarded(saveModal));
   document.querySelector("#closeConfirmBtn").addEventListener("click", closeConfirm);
   document.querySelector("#cancelDeleteBtn").addEventListener("click", closeConfirm);
-  document.querySelector("#confirmDeleteBtn").addEventListener("click", confirmDeleteSelected);
-  bulkToggle.addEventListener("click", () => {
+  document.querySelector("#confirmDeleteBtn").addEventListener("click", guarded(confirmDeleteSelected));
+  bulkToggle.addEventListener("click", guarded(async () => {
     const allEnabled = state.schedules.length > 0 && state.schedules.every((schedule) => schedule.enabled);
-    setAllEnabled(!allEnabled);
-  });
+    await setAllEnabled(!allEnabled);
+  }));
   daysButton.addEventListener("click", () => {
     weekdayMenu.classList.toggle("hidden");
   });
@@ -406,7 +431,7 @@ async function boot() {
   try {
     await loadState();
   } catch (error) {
-    statusEl.textContent = error.message;
+    setStatus(`加载失败: ${error.message}`);
   }
 }
 

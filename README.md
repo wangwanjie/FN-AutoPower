@@ -1,6 +1,10 @@
 # AutoPower
 
-AutoPower 是一个飞牛 fnOS FPK 应用，用来管理 NAS 自动开机和自动关机计划。界面参考 `design/fnos-power-schedule-flows.html` 的 fnOS 风格，底层使用 RTC wakealarm、systemd shutdown hook 和 root crontab 实现。
+AutoPower（自动开关机）是一个飞牛 fnOS FPK 应用，用来管理 NAS 自动开机和自动关机计划。界面参考 `design/fnos-power-schedule-flows.html` 的 fnOS 风格，底层使用 RTC wakealarm、systemd shutdown hook 和 root crontab 实现。
+
+- 支持平台：fnOS x86 / ARM（纯 Python + Bash，无原生二进制，依赖系统自带的 `python3` 与 `curl`）
+- 开源协议：[MIT](LICENSE)
+- 更新日志：[CHANGELOG.md](CHANGELOG.md)
 
 ## 技术栈
 
@@ -20,6 +24,8 @@ OpenDesign 参考稿来自 `design/fnos-power-schedule-flows.html`：
 
 ![AutoPower 主界面](docs/images/autopower-main.png)
 
+![编辑计划](docs/images/autopower-edit.png)
+
 ## 目录结构
 
 ```text
@@ -27,10 +33,12 @@ src/                    后端服务与调度核心
 web/                    前端页面
 tests/                  单元测试
 fpk/                    fnOS FPK 包模板
-docs/images/            README 截图
-scripts/sync-fpk.sh     同步 src/web 到 fpk/app/AutoPower
-scripts/build-fpk.sh    构建 .fpk
-scripts/create-icons.py 生成 FPK 图标
+docs/images/            README 与上架截图
+docs/STORE-SUBMISSION.md 飞牛应用中心上架材料与自查清单
+scripts/sync-fpk.sh     同步 src 到 fpk/app/AutoPower/src，web 到 fpk/app/ui
+scripts/check-fpk.sh    打包前自检（manifest、图标、JSON、生命周期脚本、单元测试）
+scripts/build-fpk.sh    自检并构建 .fpk
+scripts/create-icons.py 重新生成图标（需要 Pillow，仅改图标设计时运行）
 design/                 OpenDesign 参考稿
 ```
 
@@ -50,7 +58,7 @@ python3 src/autopower_server.py \
 http://127.0.0.1:3868/
 ```
 
-本地运行时不要点击“应用计划”或“测试开机计划”来验证真实系统写入，因为 macOS 没有 fnOS 的 `/sys/class/rtc/rtc0/wakealarm`、systemd 和 root crontab 环境。页面会显示失败原因，这是预期行为。
+非 Linux 系统（如 macOS）上，后端会跳过所有系统写入（crontab、RTC、systemd），增删计划只保存到 `--data-dir`，“应用计划”会提示当前环境不允许写入，这是预期行为。在 Linux 上调试且不想改动本机时，设置 `AUTOPOWER_DRY_RUN=1`。
 
 ## 修改页面
 
@@ -99,16 +107,16 @@ python3 -m py_compile src/autopower_core.py src/autopower_server.py scripts/crea
 fnpack --help
 ```
 
-构建当前版本：
+构建 manifest 中的当前版本（会先执行 `scripts/check-fpk.sh` 自检）：
 
 ```bash
 ./scripts/build-fpk.sh
 ```
 
-指定版本：
+指定版本（会同时改写 `fpk/manifest` 的 version，记得同步更新 `changelog` 字段和 `CHANGELOG.md`）：
 
 ```bash
-FPK_VERSION=1.0.4 ./scripts/build-fpk.sh
+FPK_VERSION=1.1.1 ./scripts/build-fpk.sh
 ```
 
 产物输出到：
@@ -127,19 +135,18 @@ dist-fpk/autopower-<version>.fpk
 systemctl restart trim_app_center.service
 ```
 
-当前入口配置使用 `iframe` 窗口模式：
+入口使用与飞牛自带应用相同的同源 CGI 方式：
 
 ```json
 {
   "type": "iframe",
-  "protocol": "https",
-  "port": "3868",
-  "url": "/",
+  "protocol": "http",
+  "url": "/cgi/ThirdParty/autopower/index.cgi/",
   "allUsers": true
 }
 ```
 
-入口协议必须用 `https`：fnOS 会在应用端口前做 TLS 终止，桌面图标地址按 `${协议}://${当前主机}:${端口}/` 拼接。写成 `http` 时，内网（http 桌面）能开，但公网（https 桌面）会因混合内容被浏览器拦截而打不开。改用 `https` 后内外网都正常，无需额外反代。详见 [docs/REMOTE-ACCESS.md](docs/REMOTE-ACCESS.md)。
+飞牛自带 nginx 执行 `ui/index.cgi`：静态文件直接从 `ui/` 返回，`/api/*` 转发到只监听 `127.0.0.1:3868` 的后端。路径走飞牛登录鉴权，内网和公网访问都无需额外端口或反代。详见 [docs/REMOTE-ACCESS.md](docs/REMOTE-ACCESS.md)。
 
 ## 系统写入行为
 
@@ -149,4 +156,8 @@ systemctl restart trim_app_center.service
 - 写入 `/sys/class/rtc/rtc0/wakealarm`，用于下一次开机
 - 安装 `autopower-rtc-wake.service`，在关机前刷新下一次 RTC 唤醒
 
-卸载脚本会移除 systemd service、唤醒脚本和 crontab 托管区。
+卸载时（`cmd/uninstall_init`）会移除 systemd service、唤醒脚本和 crontab 托管区，并清除 RTC 唤醒闹钟。
+
+## 为什么需要 root
+
+`config/privilege` 声明 `run-as: root`，因为核心功能都需要 root：写 root crontab 执行 `/sbin/poweroff`、写 `/sys/class/rtc/rtc0/wakealarm`（或调用 `rtcwake`）、在 `/etc/systemd/system` 安装关机前设置唤醒的服务。后端只监听 `127.0.0.1`，只能经过飞牛登录鉴权的 CGI 入口访问；写接口只接受 `application/json`，防止跨站表单提交。

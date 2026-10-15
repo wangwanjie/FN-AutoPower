@@ -9,9 +9,12 @@ else
   APP_DIR="$(cd "$(dirname "$0")/../app/AutoPower" && pwd)"
 fi
 DATA_DIR="${TRIM_PKGVAR:-/var/packages/autopower/var}"
-PORT="${AUTOPOWER_PORT:-3868}"
+PORT="${TRIM_SERVICE_PORT:-${AUTOPOWER_PORT:-3868}}"
 PID_FILE="${DATA_DIR}/autopower.pid"
 LOG_FILE="${DATA_DIR}/autopower.log"
+LOG_MAX_BYTES=1048576
+# 前端与后端同源：静态文件由 ui/index.cgi 直接返回，后端只负责 /api。
+WEB_DIR="$(cd "$APP_DIR/.." && pwd)/ui"
 
 mkdir -p "$DATA_DIR"
 
@@ -30,16 +33,36 @@ case "${1:-}" in
     if is_running; then
       exit 0
     fi
+    if ! command -v python3 >/dev/null 2>&1; then
+      echo "AutoPower 需要系统自带的 python3，但未找到。" >&2
+      [ -n "${TRIM_TEMP_LOGFILE:-}" ] && echo "AutoPower 需要系统自带的 python3，但未找到。" >> "$TRIM_TEMP_LOGFILE"
+      exit 1
+    fi
+    # 简单的日志轮转：超过 1MB 时保留一份旧日志
+    if [ -f "$LOG_FILE" ] && [ "$(wc -c < "$LOG_FILE")" -gt "$LOG_MAX_BYTES" ]; then
+      mv -f "$LOG_FILE" "$LOG_FILE.1"
+    fi
     cd "$APP_DIR"
-    AUTOPOWER_DATA_DIR="$DATA_DIR" AUTOPOWER_WEB_DIR="$APP_DIR/web" AUTOPOWER_PORT="$PORT" \
-      nohup python3 "$APP_DIR/src/autopower_server.py" --host 127.0.0.1 --port "$PORT" --data-dir "$DATA_DIR" --web-dir "$APP_DIR/web" \
+    nohup python3 "$APP_DIR/src/autopower_server.py" --host 127.0.0.1 --port "$PORT" --data-dir "$DATA_DIR" --web-dir "$WEB_DIR" \
       >> "$LOG_FILE" 2>&1 &
     echo $! > "$PID_FILE"
+    sleep 1
+    if ! is_running; then
+      echo "AutoPower 服务启动失败，请查看日志 $LOG_FILE" >&2
+      [ -n "${TRIM_TEMP_LOGFILE:-}" ] && tail -n 20 "$LOG_FILE" >> "$TRIM_TEMP_LOGFILE"
+      rm -f "$PID_FILE"
+      exit 1
+    fi
     ;;
   stop)
     if is_running; then
-      kill "$(cat "$PID_FILE")" 2>/dev/null || true
-      sleep 1
+      PID="$(cat "$PID_FILE")"
+      kill "$PID" 2>/dev/null || true
+      for _ in 1 2 3 4 5; do
+        kill -0 "$PID" 2>/dev/null || break
+        sleep 1
+      done
+      kill -9 "$PID" 2>/dev/null || true
     fi
     rm -f "$PID_FILE"
     ;;

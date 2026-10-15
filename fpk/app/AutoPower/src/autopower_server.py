@@ -6,6 +6,7 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 import uuid
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -16,6 +17,7 @@ try:
         END_MARKER,
         ScheduleValidationError,
         format_trigger,
+        next_event,
         next_wake_timestamp,
         render_managed_crontab,
         validate_schedule,
@@ -25,6 +27,7 @@ except ImportError:
         END_MARKER,
         ScheduleValidationError,
         format_trigger,
+        next_event,
         next_wake_timestamp,
         render_managed_crontab,
         validate_schedule,
@@ -37,6 +40,13 @@ DEFAULT_WEB_DIR = Path(__file__).resolve().parents[1] / "web"
 WAKE_SCRIPT = Path("/usr/local/bin/autopower-set-next-wake.sh")
 SYSTEMD_SERVICE = Path("/etc/systemd/system/autopower-rtc-wake.service")
 WAKEALARM_PATH = Path("/sys/class/rtc/rtc0/wakealarm")
+# ThreadingHTTPServer 并发处理请求：计划文件的读-改-写和系统同步必须串行，
+# 否则两个并发修改会互相覆盖。
+STATE_LOCK = threading.RLock()
+# 只在 Linux（fnOS）上真正改写 crontab / RTC / systemd。在 macOS 等开发机上
+# 本地调试时，增删计划也会触发同步，没有这个保护会改动开发机的 crontab。
+# 设置 AUTOPOWER_DRY_RUN=1 可在 Linux 上同样禁用系统写入。
+SYSTEM_WRITES_ENABLED = sys.platform.startswith("linux") and os.environ.get("AUTOPOWER_DRY_RUN") != "1"
 
 
 def default_schedules():
@@ -141,7 +151,13 @@ def read_crontab():
     return completed.stdout
 
 
+def ensure_system_writes():
+    if not SYSTEM_WRITES_ENABLED:
+        raise ApiError("当前环境不允许写入系统（仅 fnOS/Linux 可用，或已设置 AUTOPOWER_DRY_RUN=1）", status=500)
+
+
 def install_crontab(schedules):
+    ensure_system_writes()
     existing = read_crontab()
     updated = render_managed_crontab(existing, schedules)
     run_command(["crontab", "-"], input_text=updated)
@@ -168,6 +184,7 @@ fi
 
 
 def install_systemd_service(data_dir: Path):
+    ensure_system_writes()
     write_wake_script(data_dir)
     # 依赖 systemd 默认依赖（Conflicts=shutdown.target + Before=shutdown.target），
     # 保证关机流程会有序 stop 本服务从而执行 ExecStop 写入 RTC 闹钟。
@@ -191,6 +208,7 @@ WantedBy=multi-user.target
 
 
 def write_next_wake(schedules):
+    ensure_system_writes()
     timestamp = next_wake_timestamp(schedules)
     if timestamp is None:
         if WAKEALARM_PATH.exists():
@@ -259,6 +277,24 @@ def sync_system_state(state: AppState):
     return warnings
 
 
+def refresh_wake_script(data_dir: Path):
+    """服务启动时重写唤醒脚本：升级或迁移存储卷后应用路径可能变化，
+    旧脚本里的绝对路径会失效，导致关机前无法设置 RTC 闹钟。"""
+    if not SYSTEM_WRITES_ENABLED or not SYSTEMD_SERVICE.exists():
+        return
+    try:
+        write_wake_script(data_dir)
+    except OSError as exc:
+        sys.stderr.write(f"[autopower] refresh wake script failed: {exc}\n")
+
+
+def describe_event(event):
+    if event is None:
+        return None
+    local = dt.datetime.fromtimestamp(event["timestamp"]).astimezone()
+    return {**event, "localTime": local.strftime("%Y-%m-%d %H:%M"), "timezone": local.strftime("%Z %z").strip()}
+
+
 def public_state(state: AppState):
     data = state.load()
     schedules = []
@@ -266,7 +302,11 @@ def public_state(state: AppState):
         enriched = dict(schedule)
         enriched["trigger"] = format_trigger(schedule)
         schedules.append(enriched)
-    return {"schedules": schedules, "status": read_status()}
+    return {
+        "schedules": schedules,
+        "nextEvent": describe_event(next_event(data["schedules"])),
+        "status": read_status(),
+    }
 
 
 class AutoPowerHandler(SimpleHTTPRequestHandler):
@@ -294,9 +334,19 @@ class AutoPowerHandler(SimpleHTTPRequestHandler):
             self.path = path[len(prefix):]
 
     def read_json(self):
-        length = int(self.headers.get("Content-Length", "0"))
+        # 只接受 application/json：普通 HTML 表单无法发出该类型，
+        # 可以阻止第三方页面借用户的飞牛登录态跨站提交（CSRF）。
+        content_type = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        if content_type != "application/json":
+            raise ApiError("content type must be application/json", status=415)
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            raise ApiError("invalid content length", status=400)
         if length == 0:
             return {}
+        if length > 64 * 1024:
+            raise ApiError("request body too large", status=413)
         try:
             return json.loads(self.rfile.read(length).decode("utf-8"))
         except json.JSONDecodeError as exc:
@@ -307,10 +357,18 @@ class AutoPowerHandler(SimpleHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
 
     def handle_api(self, method):
+        if method == "GET":
+            self._handle_api(method)
+            return
+        with STATE_LOCK:
+            self._handle_api(method)
+
+    def _handle_api(self, method):
         parsed = urlparse(self.path)
         parts = [part for part in parsed.path.split("/") if part]
         try:
@@ -333,6 +391,7 @@ class AutoPowerHandler(SimpleHTTPRequestHandler):
                 self.send_json(deleted)
                 return
             if method == "POST" and parts == ["api", "apply"]:
+                self.read_json()
                 try:
                     self.send_json(apply_system_state(self.state))
                 except Exception as exc:
@@ -347,6 +406,7 @@ class AutoPowerHandler(SimpleHTTPRequestHandler):
                     )
                 return
             if method == "POST" and parts == ["api", "test-wake"]:
+                self.read_json()
                 schedules = self.state.load()["schedules"]
                 timestamp = next_wake_timestamp(schedules)
                 try:
@@ -387,7 +447,7 @@ class AutoPowerHandler(SimpleHTTPRequestHandler):
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--host", default="0.0.0.0")
+    parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=int(os.environ.get("AUTOPOWER_PORT", "3868")))
     parser.add_argument("--data-dir", default=os.environ.get("AUTOPOWER_DATA_DIR", str(DEFAULT_DATA_DIR)))
     parser.add_argument("--web-dir", default=os.environ.get("AUTOPOWER_WEB_DIR", str(DEFAULT_WEB_DIR)))
@@ -409,6 +469,7 @@ def main():
             print(timestamp)
         return
 
+    refresh_wake_script(state.data_dir)
     AutoPowerHandler.state = state
     AutoPowerHandler.web_dir = Path(args.web_dir)
     AutoPowerHandler.base_path = "/" + args.base_path.strip("/") if args.base_path.strip("/") else ""
