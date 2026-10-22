@@ -1,6 +1,7 @@
 const state = {
   schedules: [],
   nextEvent: null,
+  executor: null,
   selectedId: null,
   editingId: null,
 };
@@ -79,15 +80,97 @@ async function requestJson(url, options = {}) {
   return payload;
 }
 
-function statusText(status) {
-  if (!status) return "";
-  const rtc = status.rtc || {};
-  const alarm = rtc.alrm_date && rtc.alrm_time ? `${rtc.alrm_date} ${rtc.alrm_time}` : "未读取到 RTC 闹钟";
-  return `RTC: ${alarm} · alarm_IRQ: ${rtc.alarm_IRQ || "未知"} · 服务: ${status.systemd || "未知"} · 计划写入: ${status.crontabManaged ? "是" : "否"}`;
+const executorStateLabels = {
+  ok: "运行正常",
+  missing: "未部署",
+  outdated: "版本过旧",
+  error: "运行异常",
+};
+
+// 服务端已把 RTC 闹钟换算成真实时刻，这里按本地时间显示，并说明主板时钟的时区偏差
+function rtcOffsetText(offset) {
+  if (!offset) {
+    return "主板时钟为 UTC，已换算为系统时间";
+  }
+  const sign = offset > 0 ? "快" : "慢";
+  const minutes = Math.abs(offset) / 60;
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  const amount = rest ? `${hours} 小时 ${rest} 分钟` : `${hours} 小时`;
+  return `主板时钟比 UTC ${sign} ${amount}，已自动补偿`;
 }
 
-function setStatus(message, status) {
-  statusEl.textContent = status ? `${message} · ${statusText(status)}` : message;
+function rtcText(executor) {
+  const rtc = (executor && executor.rtc) || {};
+  if (!rtc.available) {
+    return "未读取到 RTC";
+  }
+  if (!rtc.wake) {
+    return `未设置（${rtcOffsetText(rtc.offset)}）`;
+  }
+  return `${formatTime(rtc.wake)}（${rtcOffsetText(rtc.offset)}）`;
+}
+
+function statusText(executor) {
+  if (!executor) return "";
+  const label = executorStateLabels[executor.state] || "未知";
+  const wake = executor.nextWake ? `下次开机: ${formatTime(executor.nextWake)}` : "未设置开机唤醒";
+  return executor.state === "ok" ? `执行器${label} · ${wake}` : `执行器${label}`;
+}
+
+function setStatus(message, executor) {
+  statusEl.textContent = executor ? `${message} · ${statusText(executor)}` : message;
+}
+
+function executorBannerText(executor) {
+  if (executor.state === "missing") return "执行器尚未部署：计划已保存，但不会自动关机或开机。";
+  if (executor.state === "outdated") return `执行器版本过旧（${executor.version || "未知"}，需要 ${executor.expectedVersion}），请重新执行部署命令。`;
+  return `执行器运行异常：${executor.lastError || "未知错误"}`;
+}
+
+function renderExecutor() {
+  const executor = state.executor;
+  const banner = document.querySelector("#executorBanner");
+  if (!executor) return;
+  banner.classList.toggle("hidden", executor.state === "ok");
+  banner.classList.toggle("danger", executor.state === "error");
+  document.querySelector("#executorBannerText").textContent = executorBannerText(executor);
+  document.querySelector("#deployState").textContent = executorStateLabels[executor.state] || "未知";
+  document.querySelector("#deployVersion").textContent = executor.version
+    ? `${executor.version}（应用需要 ${executor.expectedVersion}）`
+    : `未部署（应用需要 ${executor.expectedVersion}）`;
+  document.querySelector("#deployLastRun").textContent = executor.lastRun
+    ? `${formatTime(Date.parse(executor.lastRun) / 1000)}${executor.lastError ? ` · ${executor.lastError}` : ""}`
+    : "-";
+  document.querySelector("#deployRtc").textContent = rtcText(executor);
+  document.querySelector("#deployCommand").textContent = executor.deployCommand;
+  document.querySelector("#uninstallCommand").textContent = executor.uninstallCommand;
+}
+
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch (error) {
+    // iframe 或非 HTTPS 环境下 Clipboard API 不可用，退回 execCommand
+    const area = document.createElement("textarea");
+    area.value = text;
+    document.body.append(area);
+    area.select();
+    document.execCommand("copy");
+    area.remove();
+  }
+  setStatus("命令已复制，请在 SSH 中执行");
+}
+
+function openDeploy() {
+  renderExecutor();
+  modalOverlay.classList.remove("hidden");
+  document.querySelector("#deployModal").classList.remove("hidden");
+}
+
+function closeDeploy() {
+  document.querySelector("#deployModal").classList.add("hidden");
+  modalOverlay.classList.add("hidden");
 }
 
 // 以浏览器本地时区显示；NAS 与浏览器通常同处一个时区。
@@ -200,7 +283,9 @@ async function loadState() {
   if (!state.selectedId && state.schedules[0]) {
     state.selectedId = state.schedules[0].id;
   }
-  statusEl.textContent = statusText(payload.status);
+  state.executor = payload.executor || null;
+  statusEl.textContent = statusText(state.executor);
+  renderExecutor();
   render();
 }
 
@@ -339,36 +424,6 @@ async function setAllEnabled(enabled) {
   await loadState();
 }
 
-async function applyPlans() {
-  setStatus("正在应用计划...");
-  try {
-    const payload = await requestJson(apiUrl("api/apply"), { method: "POST", body: "{}" });
-    const wakeText = payload.nextWake ? `下次开机: ${formatTime(payload.nextWake)}` : "未启用开机计划";
-    if (payload.ok === false) {
-      setStatus(`应用计划失败 · ${wakeText} · ${payload.error || "请检查系统权限"}`, payload.status);
-      return;
-    }
-    setStatus(`计划已应用 · ${wakeText}`, payload.status);
-  } catch (error) {
-    setStatus(`应用计划失败: ${error.message}`);
-  }
-}
-
-async function testWake() {
-  setStatus("正在测试开机计划...");
-  try {
-    const payload = await requestJson(apiUrl("api/test-wake"), { method: "POST", body: "{}" });
-    const prefix = payload.nextWake ? `下一次开机: ${formatTime(payload.nextWake)}` : "未启用开机计划";
-    if (payload.ok === false) {
-      setStatus(`${prefix} · 写入失败: ${payload.error || "请检查 RTC 权限"}`, payload.status);
-      return;
-    }
-    setStatus(prefix, payload.status);
-  } catch (error) {
-    setStatus(`测试开机计划失败: ${error.message}`);
-  }
-}
-
 // 包装异步事件处理：任何接口失败都在底部状态栏提示，而不是静默吞掉。
 function guarded(handler) {
   return async (...args) => {
@@ -390,8 +445,16 @@ function wireEvents() {
   document.querySelector("#deleteBtn").addEventListener("click", openConfirm);
   document.querySelector("#enableBtn").addEventListener("click", guarded(() => setSelectedEnabled(true)));
   document.querySelector("#disableBtn").addEventListener("click", guarded(() => setSelectedEnabled(false)));
-  document.querySelector("#applyBtn").addEventListener("click", applyPlans);
-  document.querySelector("#testWakeBtn").addEventListener("click", testWake);
+  document.querySelector("#deployBtn").addEventListener("click", openDeploy);
+  document.querySelector("#bannerDeployBtn").addEventListener("click", openDeploy);
+  document.querySelector("#closeDeployBtn").addEventListener("click", closeDeploy);
+  document.querySelector("#doneDeployBtn").addEventListener("click", guarded(async () => {
+    closeDeploy();
+    await loadState();
+  }));
+  document.querySelector("#refreshDeployBtn").addEventListener("click", guarded(loadState));
+  document.querySelector("#copyDeployBtn").addEventListener("click", () => copyText(state.executor.deployCommand));
+  document.querySelector("#copyUninstallBtn").addEventListener("click", () => copyText(state.executor.uninstallCommand));
   document.querySelector("#closeModalBtn").addEventListener("click", closeModal);
   document.querySelector("#cancelBtn").addEventListener("click", closeModal);
   document.querySelector("#saveBtn").addEventListener("click", guarded(saveModal));

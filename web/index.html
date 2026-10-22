@@ -24,8 +24,12 @@
         <button id="deleteBtn" class="btn danger">删除</button>
         <button id="enableBtn" class="btn">启用</button>
         <button id="disableBtn" class="btn">停用</button>
-        <button id="applyBtn" class="btn">应用计划</button>
-        <button id="testWakeBtn" class="btn ghost">测试开机计划</button>
+        <button id="deployBtn" class="btn">执行器部署</button>
+      </section>
+
+      <section id="executorBanner" class="banner hidden" role="status">
+        <span id="executorBannerText"></span>
+        <button id="bannerDeployBtn" class="btn primary small" type="button">查看部署命令</button>
       </section>
 
       <section class="summary" aria-label="计划概览">
@@ -127,6 +131,7 @@
         <div class="notice">
           <span class="prefix">注意：</span>
           开机计划依赖主板 RTC 唤醒能力。若计划未生效，请检查 BIOS/UEFI 与系统电源恢复相关设置。
+          计划时间一律按系统时间填写；主板时钟为 UTC 或与系统时间存在时区差时，执行器会自动换算。
         </div>
       </div>
 
@@ -152,6 +157,41 @@
           <label class="drop-item"><input type="checkbox" value="5">周六</label>
         </div>
       </div>
+    </section>
+
+    <section class="modal hidden" id="deployModal" role="dialog" aria-modal="true" aria-labelledby="deployTitle">
+      <header class="modal-header">
+        <h2 id="deployTitle" class="modal-title">执行器部署</h2>
+        <button id="closeDeployBtn" class="icon-close" aria-label="关闭">×</button>
+      </header>
+      <div class="modal-body">
+        <dl class="deploy-status">
+          <dt>状态</dt><dd id="deployState">未读取</dd>
+          <dt>版本</dt><dd id="deployVersion">-</dd>
+          <dt>最近运行</dt><dd id="deployLastRun">-</dd>
+          <dt>RTC 闹钟</dt><dd id="deployRtc">-</dd>
+        </dl>
+        <p class="deploy-text">
+          本应用以普通权限运行。关机和写入主板 RTC 唤醒闹钟需要 root，由执行器完成。
+          请用管理员账号 SSH 登录 NAS，执行一次下面的命令（首次安装、应用升级后提示版本过旧时都需要执行）：
+        </p>
+        <div class="code-row">
+          <code id="deployCommand" class="code"></code>
+          <button id="copyDeployBtn" class="btn small" type="button">复制</button>
+        </div>
+        <p class="deploy-text">
+          执行器只读取本应用的计划文件，每分钟检查一次：命中关机计划时关机，并始终把下一次开机时间写入 RTC。
+          卸载本应用前请先执行：
+        </p>
+        <div class="code-row">
+          <code id="uninstallCommand" class="code"></code>
+          <button id="copyUninstallBtn" class="btn small" type="button">复制</button>
+        </div>
+      </div>
+      <footer class="modal-footer">
+        <button id="refreshDeployBtn" class="btn">刷新状态</button>
+        <button id="doneDeployBtn" class="btn primary">完成</button>
+      </footer>
     </section>
 
     <section class="confirm hidden" id="confirmDialog" role="dialog" aria-modal="true" aria-labelledby="confirmTitle">

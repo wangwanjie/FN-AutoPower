@@ -6,7 +6,9 @@ from src.autopower_core import (
     next_event,
     next_occurrence,
     next_wake_timestamp,
-    render_managed_crontab,
+    rtc_alarm_value,
+    rtc_offset,
+    strip_managed_crontab,
     validate_schedule,
 )
 
@@ -76,24 +78,12 @@ class AutoPowerCoreTests(unittest.TestCase):
 
         self.assertEqual(result, int(dt.datetime(2026, 6, 19, 15, 0, tzinfo=dt.timezone.utc).timestamp()))
 
-    def test_render_managed_crontab_preserves_unmanaged_lines(self):
-        schedules = [
-            {"id": "a", "enabled": True, "operation": "shutdown", "days": "daily", "hour": 20, "minute": 0},
-            {"id": "b", "enabled": True, "operation": "shutdown", "days": "custom", "weekdays": [4], "hour": 14, "minute": 30},
-            {"id": "c", "enabled": False, "operation": "shutdown", "days": "daily", "hour": 9, "minute": 0},
-            {"id": "d", "enabled": True, "operation": "wake", "days": "daily", "hour": 15, "minute": 0},
-        ]
-        existing = "5 1 * * * /usr/bin/true\n# BEGIN AUTOPOWER\nold\n# END AUTOPOWER\n"
+    def test_strip_managed_crontab_keeps_unmanaged_lines(self):
+        existing = "5 1 * * * /usr/bin/true\n# BEGIN AUTOPOWER\n0 20 * * * /sbin/poweroff # autopower:a\n# END AUTOPOWER\n"
 
-        result = render_managed_crontab(existing, schedules)
+        result = strip_managed_crontab(existing)
 
-        self.assertIn("5 1 * * * /usr/bin/true", result)
-        self.assertIn("# BEGIN AUTOPOWER", result)
-        self.assertIn("0 20 * * * /sbin/poweroff # autopower:a", result)
-        self.assertIn("30 14 * * 5 /sbin/poweroff # autopower:b", result)
-        self.assertNotIn("old", result)
-        self.assertNotIn("autopower:c", result)
-        self.assertNotIn("autopower:d", result)
+        self.assertEqual(result, "5 1 * * * /usr/bin/true")
 
     def test_invalid_schedule_rejects_bad_time(self):
         with self.assertRaises(ScheduleValidationError):
@@ -121,3 +111,15 @@ class NextEventTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RtcOffsetTests(unittest.TestCase):
+    def test_utc_rtc_has_no_offset(self):
+        self.assertEqual(rtc_offset(1_000_000_004, 1_000_000_000), 0)
+
+    def test_localtime_rtc_offset_rounds_to_timezone(self):
+        self.assertEqual(rtc_offset(1_000_000_000 + 8 * 3600 + 40, 1_000_000_000), 8 * 3600)
+        self.assertEqual(rtc_offset(1_000_000_000 - 5 * 3600 - 1800, 1_000_000_000), -5 * 3600 - 1800)
+
+    def test_alarm_value_adds_offset(self):
+        self.assertEqual(rtc_alarm_value(1_000_036_000, 8 * 3600), 1_000_064_800)

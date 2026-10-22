@@ -97,64 +97,75 @@ class ReadJsonTests(unittest.TestCase):
             self.assertEqual(ctx.exception.status, 415)
 
 
-class SystemWriteGuardTests(unittest.TestCase):
-    def test_sync_is_noop_when_system_writes_disabled(self):
+class ExecutorStateTests(unittest.TestCase):
+    def _state(self, temp_dir, status, now):
         from unittest import mock
 
         from src import autopower_server
 
-        with tempfile.TemporaryDirectory() as temp_dir, \
-                mock.patch.object(autopower_server, "SYSTEM_WRITES_ENABLED", False), \
-                mock.patch.object(autopower_server.subprocess, "run") as run:
-            state = AppState(Path(temp_dir))
-            create_schedule(state, {"operation": "shutdown", "days": "daily", "hour": 1, "minute": 0})
+        status_path = Path(temp_dir) / "status.json"
+        installed = Path(temp_dir) / "autopower_executor.py"
+        installed.write_text("")
+        if status is not None:
+            status_path.write_text(json.dumps(status))
+        with mock.patch.object(autopower_server, "EXECUTOR_STATUS_PATH", status_path), \
+                mock.patch.object(autopower_server, "INSTALLED_EXECUTOR", installed):
+            return autopower_server.executor_state(Path("/data"), now=now)
 
-            warnings = autopower_server.sync_system_state(state)
+    def test_missing_when_not_deployed(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            result = self._state(temp_dir, None, None)
+        self.assertEqual(result["state"], "missing")
+        self.assertIn("--install /data", result["deployCommand"])
 
-            run.assert_not_called()
-            self.assertEqual(len(warnings), 2)
+    def test_ok_when_recently_run(self):
+        import datetime as dt
 
+        from src.autopower_executor import EXECUTOR_VERSION
 
-class RestoreSystemStateTests(unittest.TestCase):
-    def test_restores_saved_plans_on_start(self):
+        now = dt.datetime(2026, 10, 16, 12, 0, tzinfo=dt.timezone.utc)
+        status = {"version": EXECUTOR_VERSION, "lastRun": "2026-10-16T11:59:00+00:00", "dataDir": "/data"}
+        with tempfile.TemporaryDirectory() as temp_dir:
+            self.assertEqual(self._state(temp_dir, status, now)["state"], "ok")
+
+    def test_outdated_version(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            result = self._state(temp_dir, {"version": "0.0.1"}, None)
+        self.assertEqual(result["state"], "outdated")
+
+    def test_error_when_cron_stopped(self):
+        import datetime as dt
+
+        from src.autopower_executor import EXECUTOR_VERSION
+
+        now = dt.datetime(2026, 10, 16, 12, 0, tzinfo=dt.timezone.utc)
+        status = {"version": EXECUTOR_VERSION, "lastRun": "2026-10-16T11:50:00+00:00", "dataDir": "/data"}
+        with tempfile.TemporaryDirectory() as temp_dir:
+            self.assertEqual(self._state(temp_dir, status, now)["state"], "error")
+
+    def test_rtc_wake_converted_to_system_time(self):
         from unittest import mock
 
         from src import autopower_server
 
-        with tempfile.TemporaryDirectory() as temp_dir, \
-                mock.patch.object(autopower_server, "SYSTEM_WRITES_ENABLED", True), \
-                mock.patch.object(autopower_server, "apply_system_state", return_value={"nextWake": 1}) as apply:
-            state = AppState(Path(temp_dir))
-            create_schedule(state, {"operation": "wake", "days": "daily", "hour": 8, "minute": 0})
+        with tempfile.TemporaryDirectory() as temp_dir:
+            since_epoch = Path(temp_dir) / "since_epoch"
+            wakealarm = Path(temp_dir) / "wakealarm"
+            # RTC 走北京时间：since_epoch 与 wakealarm 都比真实时刻多 8 小时
+            since_epoch.write_text(f"{1_000_000_000 + 8 * 3600}\n")
+            wakealarm.write_text(f"{1_000_036_000 + 8 * 3600}\n")
+            with mock.patch.object(autopower_server, "RTC_SINCE_EPOCH_PATH", since_epoch), \
+                    mock.patch.object(autopower_server, "RTC_WAKEALARM_PATH", wakealarm):
+                rtc = autopower_server.read_rtc(system_epoch=1_000_000_000)
+                self.assertEqual(rtc, {"available": True, "offset": 8 * 3600, "wake": 1_000_036_000})
+                wakealarm.write_text("")
+                self.assertIsNone(autopower_server.read_rtc(system_epoch=1_000_000_000)["wake"])
 
-            autopower_server.restore_system_state(state)
-
-            apply.assert_called_once_with(state)
-
-    def test_fresh_install_does_not_touch_system(self):
-        from unittest import mock
-
+    def test_deploy_command_quotes_paths(self):
         from src import autopower_server
 
-        with tempfile.TemporaryDirectory() as temp_dir, \
-                mock.patch.object(autopower_server, "SYSTEM_WRITES_ENABLED", True), \
-                mock.patch.object(autopower_server, "apply_system_state") as apply:
-            # 没有 schedules.json：全新安装，不应自动写入系统
-            self.assertIsNone(autopower_server.restore_system_state(AppState(Path(temp_dir))))
-            apply.assert_not_called()
-
-    def test_apply_failure_does_not_block_startup(self):
-        from unittest import mock
-
-        from src import autopower_server
-
-        with tempfile.TemporaryDirectory() as temp_dir, \
-                mock.patch.object(autopower_server, "SYSTEM_WRITES_ENABLED", True), \
-                mock.patch.object(autopower_server, "apply_system_state", side_effect=RuntimeError("boom")):
-            state = AppState(Path(temp_dir))
-            create_schedule(state, {"operation": "wake", "days": "daily", "hour": 8, "minute": 0})
-
-            self.assertIsNone(autopower_server.restore_system_state(state))
+        command = autopower_server.deploy_command(Path("/vol1/@appdata/auto power"))
+        self.assertIn("--install '/vol1/@appdata/auto power'", command)
 
 
 class DesktopConfigTests(unittest.TestCase):

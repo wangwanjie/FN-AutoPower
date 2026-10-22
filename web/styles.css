@@ -649,3 +649,68 @@ button.check {
     top: 24px;
   }
 }
+
+.btn.small {
+  height: 28px;
+  padding: 0 10px;
+  font-size: 13px;
+}
+
+.banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 16px 18px 0;
+  padding: 10px 14px;
+  border: 1px solid #fde68a;
+  border-radius: var(--radius-btn);
+  background: #fffbeb;
+  color: #92400e;
+}
+
+.banner.danger {
+  border-color: #fecaca;
+  background: #fef2f2;
+  color: var(--danger);
+}
+
+.deploy-status {
+  display: grid;
+  grid-template-columns: 72px 1fr;
+  gap: 6px 12px;
+  margin: 0 0 14px;
+}
+
+.deploy-status dt {
+  color: var(--muted);
+}
+
+.deploy-status dd {
+  margin: 0;
+  word-break: break-all;
+}
+
+.deploy-text {
+  margin: 0 0 10px;
+  color: #374151;
+  line-height: 1.6;
+}
+
+.code-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.code {
+  flex: 1;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-input);
+  background: #f9fafb;
+  font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  word-break: break-all;
+  user-select: all;
+}

@@ -9,6 +9,7 @@ mkdir -p "$APP_DIR/src"
 rm -rf "$APP_DIR/web" "$APP_DIR/src/__pycache__"
 cp "$ROOT_DIR/src/autopower_core.py" "$APP_DIR/src/autopower_core.py"
 cp "$ROOT_DIR/src/autopower_server.py" "$APP_DIR/src/autopower_server.py"
+cp "$ROOT_DIR/src/autopower_executor.py" "$APP_DIR/src/autopower_executor.py"
 
 # 同源 CGI 入口直接从 ui 目录返回静态文件（与 wol/xunlei 同款），
 # 因此把前端静态文件同步到 ui 目录，并确保 index.cgi 可执行。

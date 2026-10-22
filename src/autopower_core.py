@@ -3,9 +3,9 @@ import time
 from typing import Dict, Iterable, List, Optional
 
 
+# 1.1.x 写入 root crontab 的托管区标记，执行器部署时据此清理旧任务
 BEGIN_MARKER = "# BEGIN AUTOPOWER"
 END_MARKER = "# END AUTOPOWER"
-POWER_COMMAND = "/sbin/poweroff"
 
 DAY_PRESETS = {
     "daily": [0, 1, 2, 3, 4, 5, 6],
@@ -115,19 +115,21 @@ def next_event(schedules: Iterable[Dict], now: Optional[dt.datetime] = None) -> 
     return {"id": valid["id"], "operation": valid["operation"], "timestamp": int(when.timestamp())}
 
 
-def cron_weekday_field(weekdays: List[int]) -> str:
-    if weekdays == DAY_PRESETS["daily"]:
-        return "*"
-    cron_days = sorted(0 if day == 6 else day + 1 for day in weekdays)
-    return ",".join(str(day) for day in cron_days)
+# 时区偏移都是 15 分钟的整数倍，RTC 与系统时钟的偏差按此取整，忽略秒级漂移
+RTC_OFFSET_STEP = 15 * 60
 
 
-def cron_line(schedule: Dict) -> Optional[str]:
-    valid = validate_schedule(schedule)
-    if not valid["enabled"] or valid["operation"] != "shutdown":
-        return None
-    weekday = cron_weekday_field(valid["weekdays"])
-    return f'{valid["minute"]} {valid["hour"]} * * {weekday} {POWER_COMMAND} # autopower:{valid["id"]}'
+def rtc_offset(rtc_epoch: int, system_epoch: int) -> int:
+    """RTC 读数（内核按 UTC 解释的秒数）相对系统时钟的偏差，取整到 15 分钟。
+
+    RTC 走 UTC 时为 0；RTC 走北京时间（本地时间）时约为 +28800。
+    """
+    return round((rtc_epoch - system_epoch) / RTC_OFFSET_STEP) * RTC_OFFSET_STEP
+
+
+def rtc_alarm_value(timestamp: int, offset: int) -> int:
+    """写入 sysfs wakealarm 的值：真实唤醒时刻加上 RTC 偏差，RTC 读数到达该值时才是目标时刻。"""
+    return timestamp + offset
 
 
 def strip_managed_crontab(existing: str) -> str:
@@ -144,16 +146,6 @@ def strip_managed_crontab(existing: str) -> str:
         if not skipping:
             output.append(line)
     return "\n".join(output).strip()
-
-
-def render_managed_crontab(existing: str, schedules: Iterable[Dict]) -> str:
-    unmanaged = strip_managed_crontab(existing)
-    managed = [line for schedule in schedules for line in [cron_line(schedule)] if line]
-    sections = []
-    if unmanaged:
-        sections.append(unmanaged)
-    sections.append("\n".join([BEGIN_MARKER, *managed, END_MARKER]))
-    return "\n".join(sections).rstrip() + "\n"
 
 
 def format_trigger(schedule: Dict) -> str:

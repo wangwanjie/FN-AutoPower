@@ -3,8 +3,7 @@ import argparse
 import datetime as dt
 import json
 import os
-import shutil
-import subprocess
+import shlex
 import sys
 import threading
 import uuid
@@ -14,44 +13,44 @@ from urllib.parse import urlparse
 
 try:
     from .autopower_core import (
-        END_MARKER,
         ScheduleValidationError,
         format_trigger,
         next_event,
-        next_wake_timestamp,
-        render_managed_crontab,
+        rtc_offset,
         validate_schedule,
     )
+    from .autopower_executor import EXECUTOR_VERSION
 except ImportError:
     from autopower_core import (
-        END_MARKER,
         ScheduleValidationError,
         format_trigger,
         next_event,
-        next_wake_timestamp,
-        render_managed_crontab,
+        rtc_offset,
         validate_schedule,
     )
+    from autopower_executor import EXECUTOR_VERSION
 
 
 APP_NAME = "autopower"
 DEFAULT_DATA_DIR = Path("/var/packages/autopower/var")
 DEFAULT_WEB_DIR = Path(__file__).resolve().parents[1] / "web"
-WAKE_SCRIPT = Path("/usr/local/bin/autopower-set-next-wake.sh")
-SYSTEMD_SERVICE = Path("/etc/systemd/system/autopower-rtc-wake.service")
-WAKEALARM_PATH = Path("/sys/class/rtc/rtc0/wakealarm")
-# ThreadingHTTPServer 并发处理请求：计划文件的读-改-写和系统同步必须串行，
+# 执行器（root）的安装位置与状态文件，由 autopower_executor.py --install 写入
+EXECUTOR_STATUS_PATH = Path("/var/lib/autopower/status.json")
+INSTALLED_EXECUTOR = Path("/usr/local/lib/autopower/autopower_executor.py")
+# 执行器由 cron 每分钟运行一次；超过该时长没有运行记录视为异常
+EXECUTOR_STALE_SECONDS = 180
+RTC_WAKEALARM_PATH = Path("/sys/class/rtc/rtc0/wakealarm")
+RTC_SINCE_EPOCH_PATH = Path("/sys/class/rtc/rtc0/since_epoch")
+# 应用以包用户运行，不写入任何系统文件；增删改计划只更新 schedules.json，
+# 执行器每分钟读取一次，因此计划最迟一分钟后生效。
+# ThreadingHTTPServer 并发处理请求：计划文件的读-改-写必须串行，
 # 否则两个并发修改会互相覆盖。
 STATE_LOCK = threading.RLock()
-# 只在 Linux（fnOS）上真正改写 crontab / RTC / systemd。在 macOS 等开发机上
-# 本地调试时，增删计划也会触发同步，没有这个保护会改动开发机的 crontab。
-# 设置 AUTOPOWER_DRY_RUN=1 可在 Linux 上同样禁用系统写入。
-SYSTEM_WRITES_ENABLED = sys.platform.startswith("linux") and os.environ.get("AUTOPOWER_DRY_RUN") != "1"
 
 
 def default_schedules():
     # 默认只提供一条开机示例计划。绝不能默认带关机计划：用户没有主动
-    # 配置过关机时，应用后 crontab 里出现 poweroff 会造成机器"莫名其妙关机"。
+    # 配置过关机时，执行器按默认计划关机会造成机器"莫名其妙关机"。
     return [
         {
             "id": "wake-daily-1500",
@@ -130,170 +129,84 @@ def delete_schedule(state: AppState, schedule_id: str):
     return {"ok": True}
 
 
-def run_command(args, input_text=None):
-    completed = subprocess.run(
-        args,
-        input=input_text,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
-    )
-    if completed.returncode != 0:
-        raise ApiError(f"{' '.join(args)} failed: {completed.stderr.strip() or completed.stdout.strip()}", status=500)
-    return completed.stdout
-
-
-def read_crontab():
-    completed = subprocess.run(["crontab", "-l"], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-    if completed.returncode != 0:
-        return ""
-    return completed.stdout
-
-
-def ensure_system_writes():
-    if not SYSTEM_WRITES_ENABLED:
-        raise ApiError("当前环境不允许写入系统（仅 fnOS/Linux 可用，或已设置 AUTOPOWER_DRY_RUN=1）", status=500)
-
-
-def install_crontab(schedules):
-    ensure_system_writes()
-    existing = read_crontab()
-    updated = render_managed_crontab(existing, schedules)
-    run_command(["crontab", "-"], input_text=updated)
-
-
-def write_wake_script(data_dir: Path):
-    script = f"""#!/bin/bash
-set -euo pipefail
-NEXT=$({sys.executable} "{Path(__file__).resolve()}" --data-dir "{data_dir}" --print-next-wake)
-if [ -n "$NEXT" ]; then
-  # rtcwake 会根据 /etc/adjtime 处理硬件时钟为 localtime 的情况；
-  # 直接写 sysfs 则假定 RTC 为 UTC，在 RTC 走本地时间的机器上会差时区。
-  if command -v rtcwake >/dev/null 2>&1; then
-    rtcwake -m no -t "$NEXT"
-  else
-    echo 0 > "{WAKEALARM_PATH}"
-    echo "$NEXT" > "{WAKEALARM_PATH}"
-  fi
-  logger "AutoPower RTC wake set to $(date -d @$NEXT '+%Y-%m-%d %H:%M:%S')"
-fi
-"""
-    WAKE_SCRIPT.write_text(script, encoding="utf-8")
-    WAKE_SCRIPT.chmod(0o755)
-
-
-def install_systemd_service(data_dir: Path):
-    ensure_system_writes()
-    write_wake_script(data_dir)
-    # 依赖 systemd 默认依赖（Conflicts=shutdown.target + Before=shutdown.target），
-    # 保证关机流程会有序 stop 本服务从而执行 ExecStop 写入 RTC 闹钟。
-    # 之前写了 DefaultDependencies=no 却没补 Conflicts=shutdown.target，
-    # 导致关机时 ExecStop 根本不运行，唤醒闹钟从未设置。
-    service = f"""[Unit]
-Description=AutoPower RTC wakeup alarm before shutdown
-
-[Service]
-Type=oneshot
-RemainAfterExit=yes
-ExecStop={WAKE_SCRIPT}
-
-[Install]
-WantedBy=multi-user.target
-"""
-    SYSTEMD_SERVICE.write_text(service, encoding="utf-8")
-    run_command(["systemctl", "daemon-reload"])
-    run_command(["systemctl", "enable", SYSTEMD_SERVICE.name])
-    run_command(["systemctl", "start", SYSTEMD_SERVICE.name])
-
-
-def write_next_wake(schedules):
-    ensure_system_writes()
-    timestamp = next_wake_timestamp(schedules)
-    if timestamp is None:
-        if WAKEALARM_PATH.exists():
-            WAKEALARM_PATH.write_text("0\n", encoding="utf-8")
+def read_sysfs_int(path: Path):
+    try:
+        return int(path.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
         return None
-    rtcwake = shutil.which("rtcwake")
-    if rtcwake:
-        # rtcwake 依据 /etc/adjtime 兼容硬件时钟为 localtime 的机器
-        run_command([rtcwake, "-m", "no", "-t", str(timestamp)])
-    else:
-        WAKEALARM_PATH.write_text("0\n", encoding="utf-8")
-        WAKEALARM_PATH.write_text(f"{timestamp}\n", encoding="utf-8")
-    return timestamp
 
 
-def read_status():
-    status = {"rtc": {}, "systemd": "unknown", "crontabManaged": False}
-    try:
-        rtc = Path("/proc/driver/rtc").read_text(encoding="utf-8", errors="ignore")
-        for line in rtc.splitlines():
-            if ":" in line:
-                key, value = line.split(":", 1)
-                status["rtc"][key.strip()] = value.strip()
-    except OSError:
-        status["rtcError"] = "unable to read /proc/driver/rtc"
+def read_rtc(system_epoch=None):
+    """读取 RTC 闹钟，并换算成真实时刻（系统时钟的 Unix 时间戳）。
 
-    try:
-        status["systemd"] = run_command(["systemctl", "is-enabled", SYSTEMD_SERVICE.name]).strip()
-    except (ApiError, OSError):
-        status["systemd"] = "disabled"
-
-    try:
-        status["crontabManaged"] = END_MARKER in read_crontab()
-    except (ApiError, OSError):
-        status["crontabManaged"] = False
-    return status
-
-
-def apply_system_state(state: AppState):
-    data = state.load()
-    schedules = data["schedules"]
-    install_crontab(schedules)
-    install_systemd_service(state.data_dir)
-    wake_timestamp = write_next_wake(schedules)
-    return {"ok": True, "nextWake": wake_timestamp, "status": read_status()}
-
-
-def sync_system_state(state: AppState):
-    """计划增删改后立即同步 crontab 与 RTC 闹钟（尽力而为）。
-
-    之前只有点"应用"才会重写 crontab：在界面删除关机计划后，
-    crontab 里残留的 poweroff 行仍会继续定时关机。
+    wakealarm / since_epoch 都是内核把 RTC 寄存器当作 UTC 解释的秒数。RTC 走本地时间时
+    两者都带着同样的时区偏差，减去偏差后才是用户在计划里设置的时刻。
     """
-    warnings = []
-    schedules = state.load()["schedules"]
-    try:
-        install_crontab(schedules)
-    except Exception as exc:
-        warnings.append(f"crontab sync failed: {exc}")
-    try:
-        write_next_wake(schedules)
-    except Exception as exc:
-        warnings.append(f"wakealarm sync failed: {exc}")
-    for warning in warnings:
-        sys.stderr.write(f"[autopower] {warning}\n")
-    return warnings
+    system_epoch = int(dt.datetime.now().timestamp()) if system_epoch is None else system_epoch
+    rtc_epoch = read_sysfs_int(RTC_SINCE_EPOCH_PATH)
+    offset = rtc_offset(rtc_epoch, system_epoch) if rtc_epoch is not None else 0
+    alarm = read_sysfs_int(RTC_WAKEALARM_PATH)
+    return {
+        "available": rtc_epoch is not None,
+        "offset": offset,
+        "wake": alarm - offset if alarm else None,
+    }
 
 
-def restore_system_state(state: AppState):
-    """服务启动时重新应用已保存的计划。
+def executor_script_path():
+    """包内执行器脚本的路径，用于生成部署命令。优先使用不随存储卷变化的 /var/apps 软链路径。"""
+    app_dest = os.environ.get("TRIM_APPDEST")
+    if app_dest:
+        return Path(app_dest) / "AutoPower" / "src" / "autopower_executor.py"
+    return Path(__file__).resolve().parent / "autopower_executor.py"
 
-    飞牛升级应用时会先执行旧版本的卸载脚本，可能把 crontab 托管区、
-    唤醒服务和 RTC 闹钟一并清掉；升级或迁移存储卷后应用路径也可能变化，
-    旧唤醒脚本里的绝对路径会失效。启动时按 schedules.json 重新应用一次，
-    保证升级后计划照常生效。从未保存过计划（全新安装）时不写入系统。
-    """
-    if not SYSTEM_WRITES_ENABLED or not state.path.exists():
-        return None
+
+def deploy_command(data_dir: Path):
+    return f"sudo python3 -I {shlex.quote(str(executor_script_path()))} --install {shlex.quote(str(data_dir))}"
+
+
+def uninstall_command():
+    return f"sudo python3 -I {shlex.quote(str(INSTALLED_EXECUTOR))} --uninstall"
+
+
+def executor_state(data_dir: Path, now=None):
+    """执行器部署状态：missing 未部署、outdated 版本过旧、error 运行异常、ok 正常。"""
+    now = now or dt.datetime.now().astimezone()
+    result = {
+        "expectedVersion": EXECUTOR_VERSION,
+        "deployCommand": deploy_command(data_dir),
+        "uninstallCommand": uninstall_command(),
+        "rtc": read_rtc(),
+    }
     try:
-        result = apply_system_state(state)
-        sys.stderr.write(f"[autopower] restored system state on start, next wake: {result['nextWake']}\n")
+        status = json.loads(EXECUTOR_STATUS_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        status = None
+    if not isinstance(status, dict) or not INSTALLED_EXECUTOR.exists():
+        result["state"] = "missing"
         return result
-    except Exception as exc:
-        sys.stderr.write(f"[autopower] restore system state failed: {exc}\n")
-        return None
+
+    result.update({key: status.get(key) for key in ("version", "lastRun", "nextWake", "lastShutdown", "lastError", "dataDir")})
+    if status.get("version") != EXECUTOR_VERSION:
+        result["state"] = "outdated"
+        return result
+    if status.get("dataDir") and Path(status["dataDir"]) != Path(data_dir):
+        result["state"] = "error"
+        result["lastError"] = f"执行器读取的数据目录 {status['dataDir']} 与应用不一致，请重新部署"
+        return result
+    try:
+        last_run = dt.datetime.fromisoformat(status.get("lastRun") or "")
+        stale = (now - last_run).total_seconds() > EXECUTOR_STALE_SECONDS
+    except (TypeError, ValueError):
+        stale = True
+    if status.get("lastError"):
+        result["state"] = "error"
+    elif stale:
+        result["state"] = "error"
+        result["lastError"] = "执行器超过 3 分钟没有运行，请检查 cron 服务"
+    else:
+        result["state"] = "ok"
+    return result
 
 
 def describe_event(event):
@@ -313,7 +226,7 @@ def public_state(state: AppState):
     return {
         "schedules": schedules,
         "nextEvent": describe_event(next_event(data["schedules"])),
-        "status": read_status(),
+        "executor": executor_state(state.data_dir),
     }
 
 
@@ -385,43 +298,15 @@ class AutoPowerHandler(SimpleHTTPRequestHandler):
                 return
             if method == "POST" and parts == ["api", "schedules"]:
                 created = create_schedule(self.state, self.read_json())
-                sync_system_state(self.state)
                 self.send_json(created, status=201)
                 return
             if method == "PUT" and len(parts) == 3 and parts[:2] == ["api", "schedules"]:
                 updated = update_schedule(self.state, parts[2], self.read_json())
-                sync_system_state(self.state)
                 self.send_json(updated)
                 return
             if method == "DELETE" and len(parts) == 3 and parts[:2] == ["api", "schedules"]:
                 deleted = delete_schedule(self.state, parts[2])
-                sync_system_state(self.state)
                 self.send_json(deleted)
-                return
-            if method == "POST" and parts == ["api", "apply"]:
-                self.read_json()
-                try:
-                    self.send_json(apply_system_state(self.state))
-                except Exception as exc:
-                    schedules = self.state.load()["schedules"]
-                    self.send_json(
-                        {
-                            "ok": False,
-                            "error": str(exc),
-                            "nextWake": next_wake_timestamp(schedules),
-                            "status": read_status(),
-                        }
-                    )
-                return
-            if method == "POST" and parts == ["api", "test-wake"]:
-                self.read_json()
-                schedules = self.state.load()["schedules"]
-                timestamp = next_wake_timestamp(schedules)
-                try:
-                    written_timestamp = write_next_wake(schedules)
-                    self.send_json({"ok": True, "nextWake": written_timestamp, "status": read_status()})
-                except Exception as exc:
-                    self.send_json({"ok": False, "error": str(exc), "nextWake": timestamp, "status": read_status()})
                 return
             raise ApiError("not found", status=404)
         except ScheduleValidationError as exc:
@@ -464,20 +349,12 @@ def parse_args():
         default=os.environ.get("AUTOPOWER_BASE_PATH", ""),
         help="反向代理挂载前缀，例如 /autopower。仅当代理不剥离前缀时才需要设置。",
     )
-    parser.add_argument("--print-next-wake", action="store_true")
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
     state = AppState(Path(args.data_dir))
-    if args.print_next_wake:
-        timestamp = next_wake_timestamp(state.load()["schedules"], dt.datetime.now().astimezone())
-        if timestamp is not None:
-            print(timestamp)
-        return
-
-    restore_system_state(state)
     AutoPowerHandler.state = state
     AutoPowerHandler.web_dir = Path(args.web_dir)
     AutoPowerHandler.base_path = "/" + args.base_path.strip("/") if args.base_path.strip("/") else ""

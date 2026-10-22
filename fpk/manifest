@@ -1,7 +1,7 @@
 appname               = autopower
-version               = 1.1.2
+version               = 1.2.0
 display_name          = 自动开关机
-desc                  = 为 NAS 设置定时开机与定时关机计划，支持每天、平日、假日和指定星期。开机通过主板 RTC 唤醒实现，关机通过系统定时任务实现。
+desc                  = 为 NAS 设置定时开机与定时关机计划，支持每天、平日、假日和指定星期。应用以普通权限运行，开关机由管理员通过 SSH 一次性部署的执行器完成：定时开机通过主板 RTC 唤醒实现，定时关机通过系统定时任务实现。
 platform              = x86
 source                = thirdparty
 category              = system
@@ -14,4 +14,4 @@ desktop_applaunchname = autopower.Application
 service_port          = 3868
 checkport             = false
 ctl_stop              = true
-changelog             = 修复升级后关机计划和开机唤醒失效的问题：升级时不再清理计划，服务启动时自动按已保存的计划恢复。
+changelog             = 应用改为以普通权限运行，关机与 RTC 唤醒交给独立的 root 执行器。升级后请在应用内打开「执行器部署」，用管理员账号 SSH 执行一次部署命令，部署前不会自动开关机。
