@@ -59,10 +59,15 @@ case "${1:-}" in
       PID="$(cat "$PID_FILE")"
       kill "$PID" 2>/dev/null || true
       for _ in 1 2 3 4 5; do
-        kill -0 "$PID" 2>/dev/null || break
+        if ! kill -0 "$PID" 2>/dev/null; then
+          break
+        fi
         sleep 1
       done
-      kill -9 "$PID" 2>/dev/null || true
+      # 5 秒内没有退出才强制结束，避免误杀已复用该 PID 的其他进程
+      if kill -0 "$PID" 2>/dev/null; then
+        kill -9 "$PID" 2>/dev/null || true
+      fi
     fi
     rm -f "$PID_FILE"
     ;;

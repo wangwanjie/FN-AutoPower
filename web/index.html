@@ -16,6 +16,7 @@
             <p class="app-sub">设置 NAS 自动开机与关机时间</p>
           </div>
         </div>
+        <div class="top-right" id="serverClock" title="计划按 NAS 系统时间执行"></div>
       </header>
 
       <section class="toolbar" aria-label="计划操作">
@@ -30,6 +31,10 @@
       <section id="executorBanner" class="banner hidden" role="status">
         <span id="executorBannerText"></span>
         <button id="bannerDeployBtn" class="btn primary small" type="button">查看部署命令</button>
+      </section>
+
+      <section id="conflictBanner" class="banner hidden" role="status">
+        <span id="conflictBannerText"></span>
       </section>
 
       <section class="summary" aria-label="计划概览">
@@ -67,12 +72,18 @@
                 </th>
                 <th class="col-time">触发时间</th>
                 <th class="col-action">操作</th>
+                <th class="col-note">备注</th>
                 <th class="col-status">状态</th>
               </tr>
             </thead>
             <tbody id="scheduleRows"></tbody>
           </table>
         </div>
+      </section>
+
+      <section id="upcomingSection" class="upcoming hidden" aria-label="未来 7 天执行预览">
+        <h2 class="section-title">未来 7 天</h2>
+        <ol id="upcomingList" class="upcoming-list"></ol>
       </section>
 
       <footer id="statusLine" class="footnote"></footer>
@@ -117,6 +128,11 @@
               <span class="colon">:</span>
               <select id="minuteSelect" class="select native-select"></select>
             </div>
+          </div>
+
+          <label class="label" for="noteInput">备注：</label>
+          <div class="field">
+            <input id="noteInput" class="text-input" type="text" maxlength="40" placeholder="可选，例如：下班关机">
           </div>
 
           <label class="label" for="enabledInput">启用：</label>
@@ -170,6 +186,7 @@
           <dt>版本</dt><dd id="deployVersion">-</dd>
           <dt>最近运行</dt><dd id="deployLastRun">-</dd>
           <dt>RTC 闹钟</dt><dd id="deployRtc">-</dd>
+          <dt>最近关机</dt><dd id="deployHistory">-</dd>
         </dl>
         <p class="deploy-text">
           本应用以普通权限运行。关机和写入主板 RTC 唤醒闹钟需要 root，由执行器完成。

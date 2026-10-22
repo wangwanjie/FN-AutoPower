@@ -6,26 +6,31 @@ import os
 import shlex
 import sys
 import threading
+import time
 import uuid
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 try:
     from .autopower_core import (
         ScheduleValidationError,
+        find_conflicts,
         format_trigger,
         next_event,
         rtc_offset,
+        upcoming_events,
         validate_schedule,
     )
     from .autopower_executor import EXECUTOR_VERSION
 except ImportError:
     from autopower_core import (
         ScheduleValidationError,
+        find_conflicts,
         format_trigger,
         next_event,
         rtc_offset,
+        upcoming_events,
         validate_schedule,
     )
     from autopower_executor import EXECUTOR_VERSION
@@ -46,22 +51,15 @@ RTC_SINCE_EPOCH_PATH = Path("/sys/class/rtc/rtc0/since_epoch")
 # ThreadingHTTPServer 并发处理请求：计划文件的读-改-写必须串行，
 # 否则两个并发修改会互相覆盖。
 STATE_LOCK = threading.RLock()
+# 请求体上限，计划对象很小，64KB 足够
+MAX_BODY_BYTES = 64 * 1024
+# 首页“未来执行”预览覆盖的天数与条数
+UPCOMING_DAYS = 7
+UPCOMING_LIMIT = 12
 
 
-def default_schedules():
-    # 默认只提供一条开机示例计划。绝不能默认带关机计划：用户没有主动
-    # 配置过关机时，执行器按默认计划关机会造成机器"莫名其妙关机"。
-    return [
-        {
-            "id": "wake-daily-1500",
-            "enabled": True,
-            "operation": "wake",
-            "days": "daily",
-            "weekdays": [0, 1, 2, 3, 4, 5, 6],
-            "hour": 15,
-            "minute": 0,
-        },
-    ]
+def log(message):
+    sys.stderr.write(f"[autopower] {message}\n")
 
 
 class ApiError(Exception):
@@ -76,11 +74,29 @@ class AppState:
         self.path = self.data_dir / "schedules.json"
 
     def load(self):
+        """读取计划文件。
+
+        文件不存在时返回空列表：执行器读到的也是“没有计划”，界面必须与之一致，
+        不能展示一条实际不会执行的示例计划。文件损坏时先备份再按空列表处理，
+        避免界面因一个坏文件彻底打不开；单条非法计划被跳过并记录日志。
+        """
         if not self.path.exists():
-            return {"schedules": default_schedules()}
-        with self.path.open("r", encoding="utf-8") as handle:
-            data = json.load(handle)
-        schedules = [validate_schedule(schedule) for schedule in data.get("schedules", [])]
+            return {"schedules": []}
+        try:
+            with self.path.open("r", encoding="utf-8") as handle:
+                data = json.load(handle)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            backup = self.path.with_name(f"schedules.corrupt-{int(time.time())}.json")
+            self.path.replace(backup)
+            log(f"计划文件损坏，已备份到 {backup}: {exc}")
+            return {"schedules": []}
+        raw_schedules = data.get("schedules", []) if isinstance(data, dict) else []
+        schedules = []
+        for schedule in raw_schedules if isinstance(raw_schedules, list) else []:
+            try:
+                schedules.append(validate_schedule(schedule))
+            except ScheduleValidationError as exc:
+                log(f"跳过无效计划 {schedule!r}: {exc}")
         return {"schedules": schedules}
 
     def save(self, data):
@@ -91,6 +107,9 @@ class AppState:
         with temp_path.open("w", encoding="utf-8") as handle:
             json.dump(payload, handle, ensure_ascii=False, indent=2)
             handle.write("\n")
+            handle.flush()
+            # 执行器每分钟读取该文件，落盘后再替换，断电也不会留下半个文件
+            os.fsync(handle.fileno())
         temp_path.replace(self.path)
         return payload
 
@@ -98,7 +117,8 @@ class AppState:
 def create_schedule(state: AppState, payload):
     data = state.load()
     schedule = dict(payload)
-    schedule["id"] = schedule.get("id") or str(uuid.uuid4())
+    # id 一律由服务端生成，客户端传入的 id 可能与已有计划重复
+    schedule["id"] = str(uuid.uuid4())
     valid = validate_schedule(schedule)
     data["schedules"].append(valid)
     state.save(data)
@@ -117,6 +137,17 @@ def update_schedule(state: AppState, schedule_id: str, payload):
             state.save(data)
             return valid
     raise ApiError("schedule not found", status=404)
+
+
+def set_all_enabled(state: AppState, enabled):
+    """一次性启用或停用全部计划，避免前端逐条请求时中途失败留下半启用状态。"""
+    if not isinstance(enabled, bool):
+        raise ApiError("enabled must be a boolean")
+    data = state.load()
+    for schedule in data["schedules"]:
+        schedule["enabled"] = enabled
+    state.save(data)
+    return {"ok": True, "count": len(data["schedules"])}
 
 
 def delete_schedule(state: AppState, schedule_id: str):
@@ -187,6 +218,8 @@ def executor_state(data_dir: Path, now=None):
         return result
 
     result.update({key: status.get(key) for key in ("version", "lastRun", "nextWake", "lastShutdown", "lastError", "dataDir")})
+    history = status.get("history")
+    result["history"] = history if isinstance(history, list) else []
     if status.get("version") != EXECUTOR_VERSION:
         result["state"] = "outdated"
         return result
@@ -209,11 +242,48 @@ def executor_state(data_dir: Path, now=None):
     return result
 
 
+WEEKDAY_NAMES = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+
+
+def format_local(timestamp, with_weekday=False):
+    """按 NAS 系统时区格式化时间戳。计划按系统时间填写，展示也统一用系统时区，
+    避免浏览器与 NAS 不在同一时区时前后对不上。"""
+    if not timestamp:
+        return None
+    local = dt.datetime.fromtimestamp(timestamp).astimezone()
+    text = local.strftime("%Y-%m-%d %H:%M")
+    return f"{text} {WEEKDAY_NAMES[local.weekday()]}" if with_weekday else text
+
+
+def format_iso(value):
+    try:
+        return format_local(dt.datetime.fromisoformat(value).timestamp())
+    except (TypeError, ValueError):
+        return None
+
+
 def describe_event(event):
     if event is None:
         return None
     local = dt.datetime.fromtimestamp(event["timestamp"]).astimezone()
-    return {**event, "localTime": local.strftime("%Y-%m-%d %H:%M"), "timezone": local.strftime("%Z %z").strip()}
+    return {
+        **event,
+        "localTime": format_local(event["timestamp"], with_weekday=True),
+        "timezone": local.strftime("%Z %z").strip(),
+    }
+
+
+def describe_executor(executor):
+    """给执行器状态补上按系统时区格式化好的时间文本。"""
+    executor["nextWakeText"] = format_local(executor.get("nextWake"), with_weekday=True)
+    executor["lastRunText"] = format_iso(executor.get("lastRun"))
+    executor["rtc"]["wakeText"] = format_local(executor["rtc"].get("wake"), with_weekday=True)
+    executor["history"] = [
+        {**item, "timeText": format_iso(item.get("time"))}
+        for item in executor.get("history", [])
+        if isinstance(item, dict)
+    ]
+    return executor
 
 
 def public_state(state: AppState):
@@ -223,10 +293,15 @@ def public_state(state: AppState):
         enriched = dict(schedule)
         enriched["trigger"] = format_trigger(schedule)
         schedules.append(enriched)
+    now = dt.datetime.now().astimezone()
     return {
         "schedules": schedules,
         "nextEvent": describe_event(next_event(data["schedules"])),
-        "executor": executor_state(state.data_dir),
+        "upcoming": [describe_event(event) for event in upcoming_events(data["schedules"], days=UPCOMING_DAYS, limit=UPCOMING_LIMIT)],
+        "conflicts": find_conflicts(data["schedules"]),
+        "serverTime": format_local(now.timestamp(), with_weekday=True),
+        "timezone": now.strftime("%Z %z").strip(),
+        "executor": describe_executor(executor_state(state.data_dir)),
     }
 
 
@@ -239,7 +314,16 @@ class AutoPowerHandler(SimpleHTTPRequestHandler):
         super().__init__(*args, directory=str(self.web_dir), **kwargs)
 
     def log_message(self, fmt, *args):
-        sys.stderr.write("[autopower] " + fmt % args + "\n")
+        log(fmt % args)
+
+    def log_request(self, code="-", size="-"):
+        # 界面会定时刷新状态，成功请求不写日志，避免日志文件持续增长
+        try:
+            status = int(getattr(code, "value", code))
+        except (TypeError, ValueError):
+            status = 0
+        if status >= 400:
+            super().log_request(code, size)
 
     def strip_base_path(self):
         """Remove a reverse-proxy mount prefix (e.g. /autopower) so routing and
@@ -264,14 +348,20 @@ class AutoPowerHandler(SimpleHTTPRequestHandler):
             length = int(self.headers.get("Content-Length", "0"))
         except ValueError:
             raise ApiError("invalid content length", status=400)
+        # 负数长度会让 rfile.read 一直读到连接关闭，必须拒绝
+        if length < 0:
+            raise ApiError("invalid content length", status=400)
         if length == 0:
             return {}
-        if length > 64 * 1024:
+        if length > MAX_BODY_BYTES:
             raise ApiError("request body too large", status=413)
         try:
-            return json.loads(self.rfile.read(length).decode("utf-8"))
-        except json.JSONDecodeError as exc:
+            payload = json.loads(self.rfile.read(length).decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise ApiError(f"invalid json: {exc}", status=400)
+        if not isinstance(payload, dict):
+            raise ApiError("request body must be a JSON object", status=400)
+        return payload
 
     def send_json(self, payload, status=200):
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -283,15 +373,13 @@ class AutoPowerHandler(SimpleHTTPRequestHandler):
         self.wfile.write(body)
 
     def handle_api(self, method):
-        if method == "GET":
-            self._handle_api(method)
-            return
+        # 读取也加锁：load 在计划文件损坏时会备份并移走它，并发读取不能同时做这件事
         with STATE_LOCK:
             self._handle_api(method)
 
     def _handle_api(self, method):
         parsed = urlparse(self.path)
-        parts = [part for part in parsed.path.split("/") if part]
+        parts = [unquote(part) for part in parsed.path.split("/") if part]
         try:
             if method == "GET" and parts == ["api", "state"]:
                 self.send_json(public_state(self.state))
@@ -299,6 +387,9 @@ class AutoPowerHandler(SimpleHTTPRequestHandler):
             if method == "POST" and parts == ["api", "schedules"]:
                 created = create_schedule(self.state, self.read_json())
                 self.send_json(created, status=201)
+                return
+            if method == "PUT" and parts == ["api", "schedules"]:
+                self.send_json(set_all_enabled(self.state, self.read_json().get("enabled")))
                 return
             if method == "PUT" and len(parts) == 3 and parts[:2] == ["api", "schedules"]:
                 updated = update_schedule(self.state, parts[2], self.read_json())
@@ -314,6 +405,7 @@ class AutoPowerHandler(SimpleHTTPRequestHandler):
         except ApiError as exc:
             self.send_json({"error": str(exc)}, status=exc.status)
         except Exception as exc:
+            log(f"{method} {self.path} 失败: {exc!r}")
             self.send_json({"error": str(exc)}, status=500)
 
     def do_GET(self):

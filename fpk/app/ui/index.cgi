@@ -66,10 +66,19 @@ case "$REL_PATH" in
 
         HTTP_CODE=$(printf '%s' "$RESPONSE" | tail -n 1)
         BODY=$(printf '%s' "$RESPONSE" | sed '$d')
-        [ -z "$HTTP_CODE" ] && HTTP_CODE=502
+        # 后端未启动时 curl 返回 000，需要换成合法的 502 和 JSON 错误，前端才能给出提示
+        case "$HTTP_CODE" in
+            [1-5][0-9][0-9])
+                ;;
+            *)
+                HTTP_CODE=502
+                BODY='{"error": "AutoPower 服务未运行，请在应用中心启动应用"}'
+                ;;
+        esac
 
         echo "Status: $HTTP_CODE"
         echo "Content-Type: application/json; charset=utf-8"
+        echo "Cache-Control: no-store"
         echo ""
         printf '%s' "$BODY"
         exit 0
@@ -117,5 +126,9 @@ case "$ext" in
 esac
 
 echo "Content-Type: $mime"
+# 页面与脚本每次都向服务端确认，应用升级后不会继续使用浏览器缓存的旧版本
+case "$ext" in
+    html|htm|css|js) echo "Cache-Control: no-cache" ;;
+esac
 echo ""
 cat "$TARGET_FILE"

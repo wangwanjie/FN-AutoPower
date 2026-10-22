@@ -14,15 +14,35 @@ DAY_PRESETS = {
 }
 
 
+# 备注的最大长度，超出部分拒绝保存
+NOTE_MAX_LENGTH = 40
+
+
 class ScheduleValidationError(ValueError):
     pass
 
 
 def _coerce_int(value, field: str) -> int:
+    # bool 是 int 的子类，True 会被当成 1，必须单独拒绝；小数也不能被静默截断
+    if isinstance(value, bool):
+        raise ScheduleValidationError(f"{field} must be an integer")
+    if isinstance(value, float) and not value.is_integer():
+        raise ScheduleValidationError(f"{field} must be an integer")
     try:
         return int(value)
     except (TypeError, ValueError) as exc:
         raise ScheduleValidationError(f"{field} must be an integer") from exc
+
+
+def _coerce_note(value) -> str:
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise ScheduleValidationError("note must be a string")
+    note = " ".join(value.split())
+    if len(note) > NOTE_MAX_LENGTH:
+        raise ScheduleValidationError(f"note must be at most {NOTE_MAX_LENGTH} characters")
+    return note
 
 
 def weekdays_for(schedule: Dict) -> List[int]:
@@ -43,45 +63,73 @@ def weekdays_for(schedule: Dict) -> List[int]:
 
 
 def validate_schedule(schedule: Dict) -> Dict:
-    result = dict(schedule)
-    operation = result.get("operation")
+    """校验并规范化一条计划，只保留已知字段。
+
+    前端回传的对象可能带有 trigger 等展示字段，白名单可以避免这些字段被写进计划文件。
+    """
+    if not isinstance(schedule, dict):
+        raise ScheduleValidationError("schedule must be an object")
+    operation = schedule.get("operation")
     if operation not in ("wake", "shutdown"):
         raise ScheduleValidationError("operation must be wake or shutdown")
 
-    hour = _coerce_int(result.get("hour"), "hour")
-    minute = _coerce_int(result.get("minute"), "minute")
+    hour = _coerce_int(schedule.get("hour"), "hour")
+    minute = _coerce_int(schedule.get("minute"), "minute")
     if hour < 0 or hour > 23:
         raise ScheduleValidationError("hour must be between 0 and 23")
     if minute < 0 or minute > 59:
         raise ScheduleValidationError("minute must be between 0 and 59")
 
-    result["hour"] = hour
-    result["minute"] = minute
-    result["enabled"] = bool(result.get("enabled", True))
-    result["days"] = result.get("days", "daily")
-    result["weekdays"] = weekdays_for(result)
-    result["id"] = str(result.get("id") or f"schedule-{int(time.time() * 1000)}")
-    return result
+    enabled = schedule.get("enabled", True)
+    if not isinstance(enabled, bool):
+        raise ScheduleValidationError("enabled must be a boolean")
+
+    days = schedule.get("days", "daily")
+    return {
+        "id": str(schedule.get("id") or f"schedule-{int(time.time() * 1000)}"),
+        "enabled": enabled,
+        "operation": operation,
+        "days": days,
+        "weekdays": weekdays_for({"days": days, "weekdays": schedule.get("weekdays", [])}),
+        "hour": hour,
+        "minute": minute,
+        "note": _coerce_note(schedule.get("note")),
+    }
+
+
+def _local_now() -> dt.datetime:
+    return dt.datetime.now().astimezone()
+
+
+def _resolve_now(now: Optional[dt.datetime]):
+    """返回 (带时区的 now, 时区)。时区为 None 表示按系统时区逐个换算候选时刻。"""
+    if now is None:
+        return _local_now(), None
+    if now.tzinfo is None:
+        return now.astimezone(), None
+    return now, now.tzinfo
+
+
+def _at(day: dt.date, hour: int, minute: int, tzinfo) -> dt.datetime:
+    if tzinfo is None:
+        # 不带时区的墙上时间按系统时区解释，得到该日期实际生效的偏移（跨夏令时也正确）
+        return dt.datetime(day.year, day.month, day.day, hour, minute).astimezone()
+    return dt.datetime(day.year, day.month, day.day, hour, minute, tzinfo=tzinfo)
 
 
 def next_occurrence(schedule: Dict, now: Optional[dt.datetime] = None) -> dt.datetime:
+    """计划在 now 之后的下一次触发时刻。
+
+    now 为 None 或不带时区时按系统时区计算，每个候选时刻单独换算偏移，跨夏令时切换也正确；
+    now 带时区时（测试或指定时区）按该固定时区计算。
+    """
     valid = validate_schedule(schedule)
-    if now is None:
-        now = dt.datetime.now().astimezone()
-    if now.tzinfo is None:
-        now = now.replace(tzinfo=dt.datetime.now().astimezone().tzinfo)
+    now, tzinfo = _resolve_now(now)
 
     for offset in range(8):
         day = now.date() + dt.timedelta(days=offset)
-        candidate = dt.datetime(
-            day.year,
-            day.month,
-            day.day,
-            valid["hour"],
-            valid["minute"],
-            tzinfo=now.tzinfo,
-        )
-        if candidate.weekday() in valid["weekdays"] and candidate > now:
+        candidate = _at(day, valid["hour"], valid["minute"], tzinfo)
+        if day.weekday() in valid["weekdays"] and candidate > now:
             return candidate
 
     raise ScheduleValidationError("unable to find next occurrence")
@@ -113,6 +161,53 @@ def next_event(schedules: Iterable[Dict], now: Optional[dt.datetime] = None) -> 
         return None
     when, valid = best
     return {"id": valid["id"], "operation": valid["operation"], "timestamp": int(when.timestamp())}
+
+
+def upcoming_events(schedules: Iterable[Dict], now: Optional[dt.datetime] = None, days: int = 7, limit: int = 20) -> List[Dict]:
+    """未来 days 天内所有启用计划的触发时刻，按时间排序，最多 limit 条。"""
+    now, tzinfo = _resolve_now(now)
+    end = now + dt.timedelta(days=days)
+    events = []
+    for schedule in schedules:
+        valid = validate_schedule(schedule)
+        if not valid["enabled"]:
+            continue
+        for offset in range(days + 1):
+            day = now.date() + dt.timedelta(days=offset)
+            if day.weekday() not in valid["weekdays"]:
+                continue
+            when = _at(day, valid["hour"], valid["minute"], tzinfo)
+            if now < when <= end:
+                events.append({"id": valid["id"], "operation": valid["operation"], "timestamp": int(when.timestamp())})
+    # 同一时刻开机排在关机前，与执行器的处理顺序无关，只为展示稳定
+    events.sort(key=lambda item: (item["timestamp"], item["operation"] != "wake", item["id"]))
+    return events[:limit]
+
+
+def find_conflicts(schedules: Iterable[Dict]) -> List[Dict]:
+    """找出启用计划之间的冲突：同一星期同一分钟既开机又关机，或者重复的同类计划。"""
+    slots = {}
+    for schedule in schedules:
+        valid = validate_schedule(schedule)
+        if not valid["enabled"]:
+            continue
+        for weekday in valid["weekdays"]:
+            slots.setdefault((weekday, valid["hour"], valid["minute"]), []).append(valid)
+
+    conflicts = []
+    seen = set()
+    for (_, hour, minute), items in sorted(slots.items()):
+        operations = {item["operation"] for item in items}
+        ids = tuple(sorted({item["id"] for item in items}))
+        if len(ids) < 2:
+            continue
+        kind = "opposite" if operations == {"wake", "shutdown"} else "duplicate"
+        key = (kind, hour, minute, ids)
+        if key in seen:
+            continue
+        seen.add(key)
+        conflicts.append({"kind": kind, "hour": hour, "minute": minute, "ids": list(ids)})
+    return conflicts
 
 
 # 时区偏移都是 15 分钟的整数倍，RTC 与系统时钟的偏差按此取整，忽略秒级漂移

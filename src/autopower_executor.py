@@ -18,6 +18,7 @@
 import datetime as dt
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -39,7 +40,8 @@ from autopower_core import (  # noqa: E402
 )
 
 
-EXECUTOR_VERSION = "1.0.0"
+# 执行器逻辑变化时递增；应用发现已部署版本不一致时提示管理员重新部署
+EXECUTOR_VERSION = "1.1.0"
 
 INSTALL_DIR = Path("/usr/local/lib/autopower")
 INSTALLED_EXECUTOR = INSTALL_DIR / "autopower_executor.py"
@@ -53,8 +55,11 @@ WAKEALARM_PATH = Path("/sys/class/rtc/rtc0/wakealarm")
 RTC_SINCE_EPOCH_PATH = Path("/sys/class/rtc/rtc0/since_epoch")
 BOOT_ID_PATH = Path("/proc/sys/kernel/random/boot_id")
 POWEROFF = "/sbin/poweroff"
-PYTHON = "/usr/bin/python3"
+# 找不到当前解释器的绝对路径时使用的默认值
+DEFAULT_PYTHON = "/usr/bin/python3"
 SCHEDULES_MAX_BYTES = 256 * 1024
+# status.json 中保留的最近关机记录条数，供应用界面展示
+HISTORY_LIMIT = 10
 # 1.1.x 以 root 运行时安装的旧唤醒脚本，部署执行器时一并清理
 LEGACY_WAKE_SCRIPT = Path("/usr/local/bin/autopower-set-next-wake.sh")
 
@@ -171,6 +176,28 @@ def read_rtc_offset():
     return rtc_offset(rtc_epoch, int(time.time()))
 
 
+def read_rtc_alarm():
+    """当前 RTC 闹钟的原始读数（RTC 纪元秒），未设置或读不到时返回 None。"""
+    try:
+        raw = WAKEALARM_PATH.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        return None
+    return value or None
+
+
+def rtc_alarm_matches(timestamp):
+    """RTC 里的闹钟是否就是期望值：其他程序（如 BIOS、系统自带的定时开机）可能改写或清除它。"""
+    current = read_rtc_alarm()
+    if timestamp is None:
+        return current is None
+    # 闹钟已经过去时内核会把它当作已触发，此时 sync_wake 会按新的下次开机时间重写
+    return current == rtc_alarm_value(timestamp, read_rtc_offset())
+
+
 def write_rtc_wake(timestamp):
     """写 RTC 唤醒闹钟并返回补偿的 RTC 偏差；timestamp 为 None 时清除闹钟。"""
     if timestamp is None:
@@ -196,33 +223,40 @@ def shutdown_due(schedules, now):
     return None
 
 
-def sync_wake(schedules, status, now, force=False):
-    """下次开机时间变化、重启过或强制时才重写 RTC，避免每分钟都写闹钟。"""
+def sync_wake(schedules, status, now=None, force=False):
+    """下次开机时间变化、重启过、RTC 闹钟被改动或强制时才重写，避免每分钟都写闹钟。
+
+    now 为 None 时按系统时区计算（正确处理夏令时），测试中传入带时区的固定时刻。
+    """
     timestamp = next_wake_timestamp(schedules, now)
     boot_id = read_boot_id()
-    if force or status.get("nextWake") != timestamp or status.get("bootId") != boot_id:
+    changed = status.get("nextWake") != timestamp or status.get("bootId") != boot_id
+    if force or changed or not rtc_alarm_matches(timestamp):
         status["rtcOffset"] = write_rtc_wake(timestamp)
         status["nextWake"] = timestamp
         status["bootId"] = boot_id
-        status["wakeWrittenAt"] = now.isoformat(timespec="seconds")
+        status["wakeWrittenAt"] = (now or now_local()).isoformat(timespec="seconds")
     return timestamp
 
 
 def run_once(now=None):
     """cron 每分钟调用：同步 RTC 唤醒，命中关机计划时关机。"""
-    now = now or now_local()
+    clock = now or now_local()
     status = load_status()
-    status["lastRun"] = now.isoformat(timespec="seconds")
+    status["lastRun"] = clock.isoformat(timespec="seconds")
     try:
         data_dir = read_data_dir()
         schedules = load_schedules(data_dir)
         sync_wake(schedules, status, now)
-        minute_key = now.strftime("%Y-%m-%dT%H:%M")
-        schedule_id = shutdown_due(schedules, now)
+        minute_key = clock.strftime("%Y-%m-%dT%H:%M")
+        schedule_id = shutdown_due(schedules, clock)
         # 同一分钟只关机一次：开机恰好落在关机那一分钟时不会再次关机
         if schedule_id and status.get("lastShutdown") != minute_key:
             status["lastShutdown"] = minute_key
             status["lastShutdownSchedule"] = schedule_id
+            history = status.get("history") if isinstance(status.get("history"), list) else []
+            history.insert(0, {"time": clock.isoformat(timespec="seconds"), "schedule": schedule_id})
+            status["history"] = history[:HISTORY_LIMIT]
             status["lastError"] = None
             save_status(status)
             log(f"按计划 {schedule_id} 关机")
@@ -251,7 +285,7 @@ def set_wake_before_shutdown():
     status = load_status()
     try:
         schedules = load_schedules(read_data_dir())
-        timestamp = sync_wake(schedules, status, now_local(), force=True)
+        timestamp = sync_wake(schedules, status, force=True)
         save_status(status)
         log(f"关机前写入下次开机时间: {timestamp}")
         return 0
@@ -286,6 +320,14 @@ def systemctl(*args):
     subprocess.run(["systemctl", *args], check=True)
 
 
+def python_path():
+    """cron 与 systemd 使用的解释器：优先用执行部署命令时的 python3，保证路径真实存在。"""
+    executable = sys.executable
+    if executable and os.path.isabs(executable) and os.access(executable, os.X_OK):
+        return executable
+    return DEFAULT_PYTHON
+
+
 def install(raw_data_dir):
     require_root()
     data_dir = validate_data_dir(raw_data_dir)
@@ -301,7 +343,7 @@ def install(raw_data_dir):
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     os.chmod(STATE_DIR, 0o755)
 
-    executor = f"{PYTHON} -I {INSTALLED_EXECUTOR}"
+    executor = f"{shlex.quote(python_path())} -I {INSTALLED_EXECUTOR}"
     write_atomic(
         CRON_FILE,
         "# AutoPower：每分钟检查关机计划并同步 RTC 唤醒闹钟\n"
@@ -336,7 +378,7 @@ def install(raw_data_dir):
     status = load_status()
     status["installedAt"] = status["lastRun"] = now_local().isoformat(timespec="seconds")
     status["dataDir"] = str(data_dir)
-    timestamp = sync_wake(load_schedules(data_dir), status, now_local(), force=True)
+    timestamp = sync_wake(load_schedules(data_dir), status, force=True)
     status["lastError"] = None
     save_status(status)
     print(f"AutoPower 执行器 {EXECUTOR_VERSION} 部署完成")

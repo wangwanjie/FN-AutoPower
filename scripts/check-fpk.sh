@@ -94,6 +94,24 @@ if errors:
 print(f"FPK 自检通过：{appname} {manifest['version']}")
 PY
 
+# 包内代码必须与 src/、web/ 一致：直接改了包模板或忘记同步都会在这里发现
+sync_pairs=(
+  "src/autopower_core.py:fpk/app/AutoPower/src/autopower_core.py"
+  "src/autopower_server.py:fpk/app/AutoPower/src/autopower_server.py"
+  "src/autopower_executor.py:fpk/app/AutoPower/src/autopower_executor.py"
+  "web/index.html:fpk/app/ui/index.html"
+  "web/styles.css:fpk/app/ui/styles.css"
+  "web/app.js:fpk/app/ui/app.js"
+)
+for pair in "${sync_pairs[@]}"; do
+  source_file="$ROOT_DIR/${pair%%:*}"
+  packaged_file="$ROOT_DIR/${pair#*:}"
+  if ! cmp -s "$source_file" "$packaged_file"; then
+    echo "${pair#*:} 与 ${pair%%:*} 不一致，请先运行 ./scripts/sync-fpk.sh" >&2
+    exit 1
+  fi
+done
+
 for script in "$FPK_DIR"/cmd/* "$FPK_DIR/app/ui/index.cgi"; do
   bash -n "$script"
 done

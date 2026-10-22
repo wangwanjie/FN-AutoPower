@@ -1,6 +1,8 @@
 const state = {
   schedules: [],
   nextEvent: null,
+  upcoming: [],
+  conflicts: [],
   executor: null,
   selectedId: null,
   editingId: null,
@@ -33,6 +35,7 @@ const weekdayMenu = document.querySelector("#weekdayMenu");
 const hourSelect = document.querySelector("#hourSelect");
 const minuteSelect = document.querySelector("#minuteSelect");
 const enabledInput = document.querySelector("#enabledInput");
+const noteInput = document.querySelector("#noteInput");
 const emptyState = document.querySelector("#emptyState");
 const tableScroll = document.querySelector("#tableScroll");
 const bulkToggle = document.querySelector("#bulkToggle");
@@ -108,13 +111,23 @@ function rtcText(executor) {
   if (!rtc.wake) {
     return `未设置（${rtcOffsetText(rtc.offset)}）`;
   }
-  return `${formatTime(rtc.wake)}（${rtcOffsetText(rtc.offset)}）`;
+  return `${rtc.wakeText}（${rtcOffsetText(rtc.offset)}）`;
+}
+
+function historyText(executor) {
+  const history = (executor && executor.history) || [];
+  if (!history.length) {
+    return "暂无记录";
+  }
+  return history.slice(0, 3).map((item) => item.timeText || item.time).join("；");
 }
 
 function statusText(executor) {
-  if (!executor) return "";
+  if (!executor) {
+    return "";
+  }
   const label = executorStateLabels[executor.state] || "未知";
-  const wake = executor.nextWake ? `下次开机: ${formatTime(executor.nextWake)}` : "未设置开机唤醒";
+  const wake = executor.nextWake ? `RTC 下次开机: ${executor.nextWakeText}` : "未设置开机唤醒";
   return executor.state === "ok" ? `执行器${label} · ${wake}` : `执行器${label}`;
 }
 
@@ -140,14 +153,19 @@ function renderExecutor() {
     ? `${executor.version}（应用需要 ${executor.expectedVersion}）`
     : `未部署（应用需要 ${executor.expectedVersion}）`;
   document.querySelector("#deployLastRun").textContent = executor.lastRun
-    ? `${formatTime(Date.parse(executor.lastRun) / 1000)}${executor.lastError ? ` · ${executor.lastError}` : ""}`
+    ? `${executor.lastRunText || executor.lastRun}${executor.lastError ? ` · ${executor.lastError}` : ""}`
     : "-";
   document.querySelector("#deployRtc").textContent = rtcText(executor);
+  document.querySelector("#deployHistory").textContent = historyText(executor);
   document.querySelector("#deployCommand").textContent = executor.deployCommand;
   document.querySelector("#uninstallCommand").textContent = executor.uninstallCommand;
 }
 
 async function copyText(text) {
+  if (!text) {
+    setStatus("状态尚未加载，请稍后再试");
+    return;
+  }
   try {
     await navigator.clipboard.writeText(text);
   } catch (error) {
@@ -173,20 +191,6 @@ function closeDeploy() {
   modalOverlay.classList.add("hidden");
 }
 
-// 以浏览器本地时区显示；NAS 与浏览器通常同处一个时区。
-function formatTime(timestamp) {
-  if (!timestamp) return "";
-  return new Intl.DateTimeFormat("zh-CN", {
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false,
-  }).format(new Date(timestamp * 1000));
-}
-
 function operationText(operation) {
   return operation === "wake" ? "开机" : "关机";
 }
@@ -195,7 +199,7 @@ function formatTrigger(schedule) {
   let label = dayLabels[schedule.days];
   if (!label || schedule.days === "custom") {
     const names = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
-    label = [...(schedule.weekdays || [])].sort().map((day) => names[day]).join("、") || "指定日期";
+    label = [...(schedule.weekdays || [])].sort((a, b) => a - b).map((day) => names[day]).join("、") || "指定日期";
   }
   return `${label} ${String(schedule.hour).padStart(2, "0")}:${String(schedule.minute).padStart(2, "0")}`;
 }
@@ -204,6 +208,54 @@ function nextRunText() {
   const event = state.nextEvent;
   if (!event) return "暂无启用计划";
   return `${event.localTime} ${operationText(event.operation)}`;
+}
+
+function scheduleLabel(id) {
+  const schedule = state.schedules.find((item) => item.id === id);
+  if (!schedule) {
+    return "";
+  }
+  return schedule.note || schedule.trigger || formatTrigger(schedule);
+}
+
+function conflictText(conflicts) {
+  const time = (item) => `${String(item.hour).padStart(2, "0")}:${String(item.minute).padStart(2, "0")}`;
+  return conflicts.map((item) => {
+    const names = item.ids.map(scheduleLabel).filter(Boolean).join("、");
+    return item.kind === "opposite"
+      ? `${time(item)} 同时存在开机和关机计划（${names}）`
+      : `${time(item)} 存在重复计划（${names}）`;
+  }).join("；");
+}
+
+function renderConflicts() {
+  const banner = document.querySelector("#conflictBanner");
+  banner.classList.toggle("hidden", state.conflicts.length === 0);
+  document.querySelector("#conflictBannerText").textContent = state.conflicts.length
+    ? `计划冲突：${conflictText(state.conflicts)}。请检查是否需要调整。`
+    : "";
+}
+
+function renderUpcoming() {
+  const section = document.querySelector("#upcomingSection");
+  const list = document.querySelector("#upcomingList");
+  list.innerHTML = "";
+  section.classList.toggle("hidden", state.upcoming.length === 0);
+  state.upcoming.forEach((event) => {
+    const item = document.createElement("li");
+    item.className = `upcoming-item ${event.operation}`;
+    const time = document.createElement("span");
+    time.className = "upcoming-time";
+    time.textContent = event.localTime;
+    const op = document.createElement("span");
+    op.className = `badge op-${event.operation}`;
+    op.textContent = operationText(event.operation);
+    const label = document.createElement("span");
+    label.className = "upcoming-label";
+    label.textContent = scheduleLabel(event.id);
+    item.append(time, op, label);
+    list.append(item);
+  });
 }
 
 function updateMetrics() {
@@ -226,11 +278,15 @@ function render() {
   rowsEl.innerHTML = "";
   state.schedules.forEach((schedule) => {
     const tr = document.createElement("tr");
-    if (schedule.id === state.selectedId) tr.classList.add("selected");
+    if (schedule.id === state.selectedId) {
+      tr.classList.add("selected");
+    }
     tr.addEventListener("click", () => {
       state.selectedId = schedule.id;
       render();
     });
+    // 双击整行打开编辑
+    tr.addEventListener("dblclick", () => openModal(schedule.id));
 
     const enabledTd = document.createElement("td");
     const checkWrap = document.createElement("span");
@@ -238,6 +294,7 @@ function render() {
     const checkbox = document.createElement("button");
     checkbox.className = `check ${schedule.enabled ? "checked" : ""}`;
     checkbox.setAttribute("aria-label", "切换启用状态");
+    checkbox.addEventListener("dblclick", (event) => event.stopPropagation());
     checkbox.addEventListener("click", guarded(async (event) => {
       event.stopPropagation();
       await saveSchedule(schedule.id, { ...schedule, enabled: !schedule.enabled });
@@ -247,7 +304,6 @@ function render() {
 
     const triggerTd = document.createElement("td");
     triggerTd.textContent = schedule.trigger || formatTrigger(schedule);
-    triggerTd.addEventListener("dblclick", () => openModal(schedule.id));
 
     const operationTd = document.createElement("td");
     const select = document.createElement("select");
@@ -256,10 +312,16 @@ function render() {
     select.append(option("shutdown", "关机"));
     select.value = schedule.operation;
     select.addEventListener("click", (event) => event.stopPropagation());
+    select.addEventListener("dblclick", (event) => event.stopPropagation());
     select.addEventListener("change", guarded(async () => {
       await saveSchedule(schedule.id, { ...schedule, operation: select.value });
     }));
     operationTd.append(select);
+
+    const noteTd = document.createElement("td");
+    noteTd.className = "note-cell";
+    noteTd.textContent = schedule.note || "-";
+    noteTd.title = schedule.note || "";
 
     const statusTd = document.createElement("td");
     const badge = document.createElement("span");
@@ -267,16 +329,23 @@ function render() {
     badge.textContent = schedule.enabled ? "已启用" : "已停用";
     statusTd.append(badge);
 
-    tr.append(enabledTd, triggerTd, operationTd, statusTd);
+    tr.append(enabledTd, triggerTd, operationTd, noteTd, statusTd);
     rowsEl.append(tr);
   });
   updateMetrics();
+  renderConflicts();
+  renderUpcoming();
 }
 
 async function loadState() {
   const payload = await requestJson(apiUrl("api/state"));
   state.schedules = payload.schedules;
   state.nextEvent = payload.nextEvent || null;
+  state.upcoming = payload.upcoming || [];
+  state.conflicts = payload.conflicts || [];
+  document.querySelector("#serverClock").textContent = payload.serverTime
+    ? `NAS 时间 ${payload.serverTime}（${payload.timezone}）`
+    : "";
   if (state.selectedId && !state.schedules.some((schedule) => schedule.id === state.selectedId)) {
     state.selectedId = null;
   }
@@ -330,6 +399,7 @@ function openModal(id = null) {
     hour: 15,
     minute: 0,
     enabled: true,
+    note: "",
   };
   modalTitle.textContent = id ? "编辑计划" : "新增计划";
   document.querySelector("#enabledHint").textContent = id ? "启用此计划" : "创建后立即启用此计划";
@@ -338,6 +408,7 @@ function openModal(id = null) {
   hourSelect.value = String(schedule.hour);
   minuteSelect.value = String(schedule.minute);
   enabledInput.checked = schedule.enabled !== false;
+  noteInput.value = schedule.note || "";
   modalOverlay.classList.remove("hidden");
   scheduleModal.classList.remove("hidden");
 }
@@ -360,6 +431,7 @@ function modalPayload() {
     weekdays,
     hour: Number(hourSelect.value),
     minute: Number(minuteSelect.value),
+    note: noteInput.value.trim(),
   };
 }
 
@@ -415,13 +487,30 @@ async function setSelectedEnabled(enabled) {
 }
 
 async function setAllEnabled(enabled) {
-  for (const schedule of state.schedules) {
-    await requestJson(apiUrl(`api/schedules/${encodeURIComponent(schedule.id)}`), {
-      method: "PUT",
-      body: JSON.stringify({ ...schedule, enabled }),
-    });
-  }
+  // 服务端一次性修改全部计划，避免逐条请求时中途失败留下部分启用的状态
+  await requestJson(apiUrl("api/schedules"), {
+    method: "PUT",
+    body: JSON.stringify({ enabled }),
+  });
   await loadState();
+}
+
+function anyDialogOpen() {
+  return !modalOverlay.classList.contains("hidden");
+}
+
+function closeAllDialogs() {
+  if (!weekdayMenu.classList.contains("hidden")) {
+    weekdayMenu.classList.add("hidden");
+    return;
+  }
+  if (!scheduleModal.classList.contains("hidden")) {
+    closeModal();
+  } else if (!confirmDialog.classList.contains("hidden")) {
+    closeConfirm();
+  } else if (!document.querySelector("#deployModal").classList.contains("hidden")) {
+    closeDeploy();
+  }
 }
 
 // 包装异步事件处理：任何接口失败都在底部状态栏提示，而不是静默吞掉。
@@ -478,6 +567,11 @@ function wireEvents() {
       weekdayMenu.classList.add("hidden");
     }
   });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && anyDialogOpen()) {
+      closeAllDialogs();
+    }
+  });
   weekdayMenu.querySelectorAll("[data-days]").forEach((item) => {
     item.addEventListener("click", () => {
       setDays(item.dataset.days, dayDefaults[item.dataset.days] || getWeekdayChecks());
@@ -488,6 +582,18 @@ function wireEvents() {
   });
 }
 
+// 定时刷新执行器状态与下次执行时间；页面不可见或弹窗打开时跳过，避免打断编辑
+const REFRESH_INTERVAL_MS = 30000;
+
+function startAutoRefresh() {
+  setInterval(() => {
+    if (document.hidden || anyDialogOpen()) {
+      return;
+    }
+    loadState().catch((error) => setStatus(`刷新失败: ${error.message}`));
+  }, REFRESH_INTERVAL_MS);
+}
+
 async function boot() {
   initTimeSelects();
   wireEvents();
@@ -496,6 +602,7 @@ async function boot() {
   } catch (error) {
     setStatus(`加载失败: ${error.message}`);
   }
+  startAutoRefresh();
 }
 
 boot();

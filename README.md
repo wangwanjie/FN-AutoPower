@@ -1,164 +1,167 @@
-# AutoPower
+# AutoPower 自动开关机
 
-AutoPower（自动开关机）是一个飞牛 fnOS FPK 应用，用来管理 NAS 自动开机和自动关机计划。界面参考 `design/fnos-power-schedule-flows.html` 的 fnOS 风格，底层使用 RTC wakealarm、systemd shutdown hook 和 root crontab 实现。
+AutoPower（自动开关机）是一个飞牛 fnOS 应用，为 NAS 设置**定时开机**和**定时关机**计划：工作日早上自动开机、深夜自动关机，周末按另一套时间执行。定时开机通过主板 RTC 唤醒实现，定时关机由系统定时任务执行。
 
-- 支持平台：fnOS x86（纯 Python + Bash，依赖系统自带的 `python3` 与 `curl`；ARM 未实机验证）
+![AutoPower 主界面](docs/images/autopower-main.png)
+
+- 支持平台：fnOS x86、ARM（纯 Python + Bash，依赖系统自带的 `python3` 与 `curl`；x86 已实机验证，ARM 尚未实机验证）
 - 开源协议：[MIT](LICENSE)
 - 更新日志：[CHANGELOG.md](CHANGELOG.md)
 
-## 技术栈
+## 功能
+
+- 新增、编辑、删除、启用、停用开机或关机计划，计划可添加备注
+- 日期支持每天、平日（周一至周五）、假日（周六、周日）和指定星期
+- 首页显示下一次执行时间和未来 7 天的执行预览
+- 同一时间既开机又关机、重复计划等冲突会给出提示
+- 关机（包括手动关机）前自动把下一次开机时间写入主板 RTC
+- 主板时钟走 UTC 或走本地时间都能正确唤醒：执行器测量 RTC 与系统时间的偏差并自动补偿
+- 界面显示执行器运行状态、RTC 闹钟时间和最近的关机记录
+
+| 编辑计划 | 执行器部署 |
+|---|---|
+| ![编辑计划](docs/images/autopower-edit.png) | ![执行器部署](docs/images/autopower-deploy.png) |
+
+## 安装
+
+1. 到 [Releases](https://github.com/wangwanjie/FN-AutoPower/releases/latest) 按 NAS 架构下载安装包：
+   - Intel / AMD 处理器：`autopower-<版本>-x86.fpk`
+   - ARM 处理器：`autopower-<版本>-arm.fpk`
+
+   不确定架构时，SSH 登录 NAS 执行 `uname -m`：输出 `x86_64` 选 x86，输出 `aarch64` 选 ARM。可以用同一 Release 中的 `SHA256SUMS.txt` 校验文件完整性。
+2. 在飞牛「应用中心 → 手动安装」上传安装包。
+3. 打开应用，点「执行器部署」，复制部署命令，用管理员账号 SSH 登录 NAS 执行一次（见下文）。
+4. 在 BIOS/UEFI 中开启 RTC 唤醒（不同主板叫 “Resume by RTC Alarm”、“Wake on RTC” 等）。定时关机不依赖这一步。
+
+## 执行器部署
+
+应用本身以普通权限运行，只负责编辑计划。关机和写主板 RTC 闹钟需要 root，由一个独立的执行器完成，需要管理员部署一次：
+
+```bash
+sudo python3 -I /var/apps/autopower/target/AutoPower/src/autopower_executor.py --install <数据目录>
+```
+
+实际命令以应用内「执行器部署」中显示的为准（数据目录因安装卷而异）。部署后：
+
+- `/usr/local/lib/autopower/`：执行器代码的 root 所有副本，cron 不直接运行应用目录中可被修改的代码
+- `/etc/cron.d/autopower`：每分钟运行一次执行器，命中关机计划时执行 `/sbin/poweroff`，并同步 RTC 唤醒闹钟
+- `/etc/systemd/system/autopower-rtc-wake.service`：关机前写入下一次开机时间
+- `/var/lib/autopower/status.json`：执行器运行状态，供应用界面显示
+
+应用升级后如果界面提示“执行器版本过旧”，重新执行一次部署命令即可。
+
+卸载应用前先卸载执行器：
+
+```bash
+sudo python3 -I /usr/local/lib/autopower/autopower_executor.py --uninstall
+```
+
+没有执行时，执行器发现应用数据目录被删除后也会自动停止关机并清除 RTC 闹钟。
+
+## 安全设计
+
+- 应用以包用户运行（`config/privilege` 为 `run-as: package`），不写入任何系统文件
+- 执行器只做关机和写 RTC 两件事，不执行任何来自配置的命令；计划文件按白名单逐条校验，拒绝符号链接并限制大小
+- 后端只监听 `127.0.0.1:3868`，唯一入口 `/cgi/ThirdParty/autopower/index.cgi/` 走飞牛登录鉴权，内网和公网访问都无需额外端口或反代（详见 [docs/REMOTE-ACCESS.md](docs/REMOTE-ACCESS.md)）
+- 写接口只接受 `application/json`，阻止跨站表单提交；请求体限制 64KB
+- 不访问外网，不收集任何数据
+
+## 开发
+
+### 技术栈
 
 - 后端：Python 3 标准库 HTTP server，不依赖第三方包
 - 前端：原生 HTML/CSS/JavaScript
-- 调度核心：纯 Python 计划校验、下次唤醒计算、crontab 渲染
+- 调度核心：纯 Python 计划校验、下次触发时间计算、冲突检测
 - 打包：fnOS `fnpack`
 - 测试：Python `unittest`
+
+### 目录结构
+
+```text
+src/autopower_core.py        计划校验、下次触发计算、冲突检测、RTC 偏差换算
+src/autopower_server.py      应用后端（包用户运行），提供 /api
+src/autopower_executor.py    root 执行器：关机、写 RTC、部署与卸载
+web/                         前端页面
+tests/                       单元测试
+fpk/                         fnOS FPK 包模板
+docs/images/                 README 与上架截图
+docs/STORE-SUBMISSION.md     飞牛应用中心上架材料与自查清单
+scripts/sync-fpk.sh          同步 src、web 到 fpk 包模板
+scripts/check-fpk.sh         打包前自检（manifest、图标、JSON、生命周期脚本、代码同步、单元测试）
+scripts/build-fpk.sh         自检并按平台构建 .fpk
+scripts/build-store.sh       汇总上架材料到 store/（构建产物，不提交）
+scripts/demo-server.py       带示例数据的演示服务（不读写系统文件）
+scripts/capture-screenshots.mjs  用无头 Chrome 重新生成 docs/images 下的截图
+scripts/create-icons.py      重新生成图标（需要 Pillow，仅改图标设计时运行）
+design/                      OpenDesign 参考稿
+```
+
+### 本地运行
+
+```bash
+python3 src/autopower_server.py --host 127.0.0.1 --port 3868 --data-dir /tmp/autopower-dev --web-dir web
+```
+
+打开 `http://127.0.0.1:3868/`。本地没有部署执行器，界面会提示“执行器尚未部署”，这是预期行为。想看完整状态时运行演示服务：
+
+```bash
+python3 scripts/demo-server.py
+```
+
+打开 `http://127.0.0.1:3869/`。修改界面后重新生成截图（需要本机安装 Chrome，可用 `CHROME_BIN` 指定路径）：
+
+```bash
+node scripts/capture-screenshots.mjs
+```
+
+### 测试
+
+```bash
+python3 -m unittest discover -s tests -v
+node --check web/app.js
+```
+
+### 打包
+
+确认 `fnpack` 已在 PATH 中（或放在项目根目录、或设置 `FNPACK_BIN`）。构建 manifest 当前版本的 x86 与 ARM 安装包（会先同步代码并执行 `scripts/check-fpk.sh` 自检）：
+
+```bash
+./scripts/build-fpk.sh
+```
+
+指定版本或平台：
+
+```bash
+FPK_VERSION=1.3.0 FPK_PLATFORMS="x86 arm" ./scripts/build-fpk.sh
+```
+
+产物输出到 `dist-fpk/`：
+
+```text
+dist-fpk/autopower-<version>-x86.fpk
+dist-fpk/autopower-<version>-arm.fpk
+dist-fpk/autopower-<version>-SHA256SUMS.txt
+```
+
+各平台安装包内容相同，只有 manifest 的 `platform` 字段不同；构建过程中临时改写 `platform`，结束后自动恢复。修改版本时同步更新 manifest 的 `changelog` 字段和 `CHANGELOG.md`。
+
+### 发布
+
+```bash
+gh release create v<version> dist-fpk/autopower-<version>-*.fpk dist-fpk/autopower-<version>-SHA256SUMS.txt --title "AutoPower <version>" --notes-file <说明文件>
+```
+
+### fnOS 安装与刷新
+
+如果覆盖安装后桌面入口没有刷新，可以在 fnOS 上执行：
+
+```bash
+systemctl restart trim_app_center.service
+```
 
 ## 界面参考
 
 OpenDesign 参考稿来自 `design/fnos-power-schedule-flows.html`：
 
 ![OpenDesign 参考界面](docs/images/fnos-power-schedule-flows.png)
-
-当前实现的主界面：
-
-![AutoPower 主界面](docs/images/autopower-main.png)
-
-![编辑计划](docs/images/autopower-edit.png)
-
-## 目录结构
-
-```text
-src/                    后端服务与调度核心
-web/                    前端页面
-tests/                  单元测试
-fpk/                    fnOS FPK 包模板
-docs/images/            README 与上架截图
-docs/STORE-SUBMISSION.md 飞牛应用中心上架材料与自查清单
-scripts/sync-fpk.sh     同步 src 到 fpk/app/AutoPower/src，web 到 fpk/app/ui
-scripts/check-fpk.sh    打包前自检（manifest、图标、JSON、生命周期脚本、单元测试）
-scripts/build-fpk.sh    自检并构建 .fpk
-scripts/build-store.sh  汇总上架材料到 store/（构建产物，不提交）
-scripts/create-icons.py 重新生成图标（需要 Pillow，仅改图标设计时运行）
-design/                 OpenDesign 参考稿
-```
-
-## 本地运行
-
-```bash
-python3 src/autopower_server.py \
-  --host 127.0.0.1 \
-  --port 3868 \
-  --data-dir /tmp/autopower-dev \
-  --web-dir web
-```
-
-打开：
-
-```text
-http://127.0.0.1:3868/
-```
-
-非 Linux 系统（如 macOS）上，后端会跳过所有系统写入（crontab、RTC、systemd），增删计划只保存到 `--data-dir`，“应用计划”会提示当前环境不允许写入，这是预期行为。在 Linux 上调试且不想改动本机时，设置 `AUTOPOWER_DRY_RUN=1`。
-
-## 修改页面
-
-主要改这三个文件：
-
-```text
-web/index.html
-web/styles.css
-web/app.js
-```
-
-修改后运行：
-
-```bash
-node --check web/app.js
-python3 -m unittest discover -s tests -v
-```
-
-如果要让修改进入 FPK 包模板：
-
-```bash
-./scripts/sync-fpk.sh
-```
-
-## 修改后端或调度逻辑
-
-主要文件：
-
-```text
-src/autopower_core.py
-src/autopower_server.py
-```
-
-验证：
-
-```bash
-python3 -m unittest discover -s tests -v
-python3 -m py_compile src/autopower_core.py src/autopower_server.py scripts/create-icons.py
-```
-
-## 打包
-
-确认 `fnpack` 已在 PATH 中：
-
-```bash
-fnpack --help
-```
-
-构建 manifest 中的当前版本（会先执行 `scripts/check-fpk.sh` 自检）：
-
-```bash
-./scripts/build-fpk.sh
-```
-
-指定版本（会同时改写 `fpk/manifest` 的 version，记得同步更新 `changelog` 字段和 `CHANGELOG.md`）：
-
-```bash
-FPK_VERSION=1.1.1 ./scripts/build-fpk.sh
-```
-
-产物输出到：
-
-```text
-dist-fpk/autopower-<version>.fpk
-```
-
-`dist-fpk/` 是构建产物，不提交到 git。
-
-## fnOS 安装与刷新
-
-在飞牛应用中心手动安装生成的 `.fpk`。如果覆盖安装后桌面入口没有刷新，可以在 fnOS 上执行：
-
-```bash
-systemctl restart trim_app_center.service
-```
-
-入口使用与飞牛自带应用相同的同源 CGI 方式：
-
-```json
-{
-  "type": "iframe",
-  "protocol": "http",
-  "url": "/cgi/ThirdParty/autopower/index.cgi/",
-  "allUsers": true
-}
-```
-
-飞牛自带 nginx 执行 `ui/index.cgi`：静态文件直接从 `ui/` 返回，`/api/*` 转发到只监听 `127.0.0.1:3868` 的后端。路径走飞牛登录鉴权，内网和公网访问都无需额外端口或反代。详见 [docs/REMOTE-ACCESS.md](docs/REMOTE-ACCESS.md)。
-
-## 系统写入行为
-
-应用计划时会：
-
-- 生成 root crontab 托管区，用于关机计划
-- 写入 `/sys/class/rtc/rtc0/wakealarm`，用于下一次开机
-- 安装 `autopower-rtc-wake.service`，在关机前刷新下一次 RTC 唤醒
-
-卸载时（`cmd/uninstall_init`）会移除 systemd service、唤醒脚本和 crontab 托管区，并清除 RTC 唤醒闹钟。
-
-## 为什么需要 root
-
-`config/privilege` 声明 `run-as: root`，因为核心功能都需要 root：写 root crontab 执行 `/sbin/poweroff`、写 `/sys/class/rtc/rtc0/wakealarm`（或调用 `rtcwake`）、在 `/etc/systemd/system` 安装关机前设置唤醒的服务。后端只监听 `127.0.0.1`，只能经过飞牛登录鉴权的 CGI 入口访问；写接口只接受 `application/json`，防止跨站表单提交。
