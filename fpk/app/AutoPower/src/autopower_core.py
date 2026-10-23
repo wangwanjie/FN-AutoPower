@@ -18,6 +18,10 @@ DAY_PRESETS = {
 NOTE_MAX_LENGTH = 40
 
 
+# 计划支持的操作：开机由 RTC 唤醒完成，关机、重启由执行器在命中的那一分钟执行
+OPERATIONS = ("wake", "shutdown", "reboot")
+
+
 class ScheduleValidationError(ValueError):
     pass
 
@@ -70,8 +74,8 @@ def validate_schedule(schedule: Dict) -> Dict:
     if not isinstance(schedule, dict):
         raise ScheduleValidationError("schedule must be an object")
     operation = schedule.get("operation")
-    if operation not in ("wake", "shutdown"):
-        raise ScheduleValidationError("operation must be wake or shutdown")
+    if operation not in OPERATIONS:
+        raise ScheduleValidationError("operation must be wake, shutdown, or reboot")
 
     hour = _coerce_int(schedule.get("hour"), "hour")
     minute = _coerce_int(schedule.get("minute"), "minute")
@@ -148,18 +152,19 @@ def next_wake_timestamp(schedules: Iterable[Dict], now: Optional[dt.datetime] = 
 
 
 def next_event(schedules: Iterable[Dict], now: Optional[dt.datetime] = None) -> Optional[Dict]:
-    """返回所有启用计划中时间上最近的一次执行（开机或关机）。"""
+    """返回所有启用计划中时间上最近的一次执行（开机、关机或重启）。"""
     best = None
     for schedule in schedules:
         valid = validate_schedule(schedule)
         if not valid["enabled"]:
             continue
-        when = next_occurrence(valid, now)
-        if best is None or when < best[0]:
-            best = (when, valid)
+        # 同一时刻按 OPERATIONS 顺序取，与未来执行预览的排序一致
+        key = (next_occurrence(valid, now), OPERATIONS.index(valid["operation"]))
+        if best is None or key < best[0]:
+            best = (key, valid)
     if best is None:
         return None
-    when, valid = best
+    (when, _), valid = best
     return {"id": valid["id"], "operation": valid["operation"], "timestamp": int(when.timestamp())}
 
 
@@ -179,13 +184,14 @@ def upcoming_events(schedules: Iterable[Dict], now: Optional[dt.datetime] = None
             when = _at(day, valid["hour"], valid["minute"], tzinfo)
             if now < when <= end:
                 events.append({"id": valid["id"], "operation": valid["operation"], "timestamp": int(when.timestamp())})
-    # 同一时刻开机排在关机前，与执行器的处理顺序无关，只为展示稳定
-    events.sort(key=lambda item: (item["timestamp"], item["operation"] != "wake", item["id"]))
+    # 同一时刻按开机、关机、重启排序，与执行器的处理顺序无关，只为展示稳定
+    events.sort(key=lambda item: (item["timestamp"], OPERATIONS.index(item["operation"]), item["id"]))
     return events[:limit]
 
 
 def find_conflicts(schedules: Iterable[Dict]) -> List[Dict]:
-    """找出启用计划之间的冲突：同一星期同一分钟既开机又关机，或者重复的同类计划。"""
+    """找出启用计划之间的冲突：同一星期同一分钟存在不同操作（如既开机又关机、既关机又重启），
+    或者重复的同类计划。operations 按 OPERATIONS 顺序列出该时刻涉及的操作。"""
     slots = {}
     for schedule in schedules:
         valid = validate_schedule(schedule)
@@ -201,12 +207,13 @@ def find_conflicts(schedules: Iterable[Dict]) -> List[Dict]:
         ids = tuple(sorted({item["id"] for item in items}))
         if len(ids) < 2:
             continue
-        kind = "opposite" if operations == {"wake", "shutdown"} else "duplicate"
+        kind = "opposite" if len(operations) > 1 else "duplicate"
         key = (kind, hour, minute, ids)
         if key in seen:
             continue
         seen.add(key)
-        conflicts.append({"kind": kind, "hour": hour, "minute": minute, "ids": list(ids)})
+        ordered = [operation for operation in OPERATIONS if operation in operations]
+        conflicts.append({"kind": kind, "hour": hour, "minute": minute, "ids": list(ids), "operations": ordered})
     return conflicts
 
 

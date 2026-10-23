@@ -4,7 +4,7 @@
         "items": [
             {
                 "type": "tips",
-                "helpText": "卸载后 NAS 将不再按计划自动开机或关机。如果部署过执行器，请先用管理员账号 SSH 登录 NAS 执行以下命令，删除执行器的定时任务、关机前唤醒服务并清除 RTC 闹钟：sudo python3 -I /usr/local/lib/autopower/autopower_executor.py --uninstall 。未执行时，执行器发现应用数据已删除后也会自动停止关机并清除唤醒闹钟。"
+                "helpText": "卸载后 NAS 将不再按计划自动开机、关机或重启。如果部署过执行器，请先用管理员账号 SSH 登录 NAS 执行以下命令，删除执行器的定时任务、关机前唤醒服务并清除 RTC 闹钟：sudo python3 -I /usr/local/lib/autopower/autopower_executor.py --uninstall 。未执行时，执行器发现应用数据已删除后也会自动停止关机、重启并清除唤醒闹钟。"
             }
         ]
     }

@@ -27,6 +27,7 @@ SCHEDULES = [
     {"id": "off-weekday", "enabled": True, "operation": "shutdown", "days": "weekday", "hour": 23, "minute": 0, "note": "工作日夜间关机"},
     {"id": "wake-weekend", "enabled": True, "operation": "wake", "days": "holiday", "hour": 10, "minute": 0, "note": "周末晚点开机"},
     {"id": "off-weekend", "enabled": True, "operation": "shutdown", "days": "holiday", "hour": 1, "minute": 30, "note": "周末熬夜后关机"},
+    {"id": "reboot-weekly", "enabled": True, "operation": "reboot", "days": "custom", "weekdays": [0], "hour": 4, "minute": 0, "note": "每周一凌晨重启"},
     {"id": "backup", "enabled": False, "operation": "wake", "days": "custom", "weekdays": [2], "hour": 3, "minute": 0, "note": "每周三凌晨备份"},
 ]
 

@@ -119,7 +119,10 @@ function historyText(executor) {
   if (!history.length) {
     return "暂无记录";
   }
-  return history.slice(0, 3).map((item) => item.timeText || item.time).join("；");
+  // 执行器 1.2.0 之前的记录没有 operation 字段，当时只有关机
+  return history.slice(0, 3)
+    .map((item) => `${item.timeText || item.time} ${operationText(item.operation || "shutdown")}`)
+    .join("；");
 }
 
 function statusText(executor) {
@@ -136,7 +139,7 @@ function setStatus(message, executor) {
 }
 
 function executorBannerText(executor) {
-  if (executor.state === "missing") return "执行器尚未部署：计划已保存，但不会自动关机或开机。";
+  if (executor.state === "missing") return "执行器尚未部署：计划已保存，但不会自动开机、关机或重启。";
   if (executor.state === "outdated") return `执行器版本过旧（${executor.version || "未知"}，需要 ${executor.expectedVersion}），请重新执行部署命令。`;
   return `执行器运行异常：${executor.lastError || "未知错误"}`;
 }
@@ -191,8 +194,14 @@ function closeDeploy() {
   modalOverlay.classList.add("hidden");
 }
 
+const operationLabels = {
+  wake: "开机",
+  shutdown: "关机",
+  reboot: "重启",
+};
+
 function operationText(operation) {
-  return operation === "wake" ? "开机" : "关机";
+  return operationLabels[operation] || operation;
 }
 
 function formatTrigger(schedule) {
@@ -222,9 +231,12 @@ function conflictText(conflicts) {
   const time = (item) => `${String(item.hour).padStart(2, "0")}:${String(item.minute).padStart(2, "0")}`;
   return conflicts.map((item) => {
     const names = item.ids.map(scheduleLabel).filter(Boolean).join("、");
-    return item.kind === "opposite"
-      ? `${time(item)} 同时存在开机和关机计划（${names}）`
-      : `${time(item)} 存在重复计划（${names}）`;
+    if (item.kind !== "opposite") {
+      return `${time(item)} 存在重复计划（${names}）`;
+    }
+    // 旧版后端不返回 operations，当时只可能是开机与关机冲突
+    const operations = (item.operations || ["wake", "shutdown"]).map(operationText).join("和");
+    return `${time(item)} 同时存在${operations}计划（${names}）`;
   }).join("；");
 }
 
@@ -308,8 +320,7 @@ function render() {
     const operationTd = document.createElement("td");
     const select = document.createElement("select");
     select.className = "select native-select";
-    select.append(option("wake", "开机"));
-    select.append(option("shutdown", "关机"));
+    Object.entries(operationLabels).forEach(([value, label]) => select.append(option(value, label)));
     select.value = schedule.operation;
     select.addEventListener("click", (event) => event.stopPropagation());
     select.addEventListener("dblclick", (event) => event.stopPropagation());

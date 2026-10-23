@@ -13,7 +13,7 @@
           <span class="dot" aria-hidden="true"></span>
           <div>
             <h1 class="app-title">开关机计划</h1>
-            <p class="app-sub">设置 NAS 自动开机与关机时间</p>
+            <p class="app-sub">设置 NAS 自动开机、关机与重启时间</p>
           </div>
         </div>
         <div class="top-right" id="serverClock" title="计划按 NAS 系统时间执行"></div>
@@ -56,7 +56,7 @@
         <div id="emptyState" class="empty hidden">
           <div class="empty-ico" aria-hidden="true">⏱</div>
           <h2>还没有开关机计划</h2>
-          <p>创建自动开机或关机规则后，系统会按设定时间执行。适合办公室固定上下班、家庭夜间自动关机等场景。</p>
+          <p>创建自动开机、关机或重启规则后，系统会按设定时间执行。适合办公室固定上下班、家庭夜间自动关机、定期重启等场景。</p>
           <button id="emptyAddBtn" class="btn primary">新增第一个计划</button>
         </div>
 
@@ -108,6 +108,10 @@
               <label class="radio-item">
                 <input type="radio" name="operation" value="shutdown">
                 <span>关机</span>
+              </label>
+              <label class="radio-item">
+                <input type="radio" name="operation" value="reboot">
+                <span>重启</span>
               </label>
             </div>
           </div>
@@ -186,10 +190,10 @@
           <dt>版本</dt><dd id="deployVersion">-</dd>
           <dt>最近运行</dt><dd id="deployLastRun">-</dd>
           <dt>RTC 闹钟</dt><dd id="deployRtc">-</dd>
-          <dt>最近关机</dt><dd id="deployHistory">-</dd>
+          <dt>最近执行</dt><dd id="deployHistory">-</dd>
         </dl>
         <p class="deploy-text">
-          本应用以普通权限运行。关机和写入主板 RTC 唤醒闹钟需要 root，由执行器完成。
+          本应用以普通权限运行。关机、重启和写入主板 RTC 唤醒闹钟需要 root，由执行器完成。
           请用管理员账号 SSH 登录 NAS，执行一次下面的命令（首次安装、应用升级后提示版本过旧时都需要执行）：
         </p>
         <div class="code-row">
@@ -197,7 +201,7 @@
           <button id="copyDeployBtn" class="btn small" type="button">复制</button>
         </div>
         <p class="deploy-text">
-          执行器只读取本应用的计划文件，每分钟检查一次：命中关机计划时关机，并始终把下一次开机时间写入 RTC。
+          执行器只读取本应用的计划文件，每分钟检查一次：命中关机或重启计划时执行对应操作，并始终把下一次开机时间写入 RTC。
           卸载本应用前请先执行：
         </p>
         <div class="code-row">

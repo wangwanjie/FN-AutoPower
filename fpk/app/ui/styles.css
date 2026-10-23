@@ -744,6 +744,12 @@ button.check {
   background: #fffbeb;
 }
 
+.badge.op-reboot {
+  color: #1d4ed8;
+  border-color: #bfdbfe;
+  background: #eff6ff;
+}
+
 .text-input {
   width: 100%;
   max-width: 320px;

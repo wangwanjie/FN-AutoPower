@@ -26,21 +26,21 @@
 
 ## 应用说明（可直接粘贴）
 
-> 自动开关机：为 NAS 设置定时开机与定时关机计划，支持每天、平日、假日和指定星期。
-> 定时开机通过主板 RTC 唤醒实现（需主板支持并在 BIOS 中开启 RTC 唤醒）；定时关机通过系统定时任务实现。
-> 应用以普通权限运行，关机与写 RTC 由管理员通过 SSH 一次性部署的执行器完成；关机前会自动写入下一次开机时间。
+> 自动开关机：为 NAS 设置定时开机、定时关机与定时重启计划，支持每天、平日、假日和指定星期。
+> 定时开机通过主板 RTC 唤醒实现（需主板支持并在 BIOS 中开启 RTC 唤醒）；定时关机与重启通过系统定时任务实现。
+> 应用以普通权限运行，关机、重启与写 RTC 由管理员通过 SSH 一次性部署的执行器完成；关机前会自动写入下一次开机时间。
 
 ## 权限说明（审核可能会问）
 
 应用以普通包用户运行（`config/privilege` 为 `run-as: package`），只读写自己的数据目录。需要 root 的操作由执行器完成，管理员在应用内复制命令、通过 SSH 部署一次：
 
-- `/etc/cron.d/autopower`：每分钟以 root 运行执行器，命中关机计划时执行 `/sbin/poweroff`，并同步 `/sys/class/rtc/rtc0/wakealarm`
+- `/etc/cron.d/autopower`：每分钟以 root 运行执行器，命中关机计划时执行 `/sbin/poweroff`、命中重启计划时执行 `/sbin/reboot`，并同步 `/sys/class/rtc/rtc0/wakealarm`
 - `/etc/systemd/system/autopower-rtc-wake.service`：关机前写入下一次开机时间
 - 执行器代码复制到 root 所有的 `/usr/local/lib/autopower`，cron 不运行应用目录中可被包用户修改的代码
 
 安全措施：
 
-- 执行器只做关机和写 RTC，不执行任何来自配置的命令；计划文件按白名单校验，拒绝符号链接、限制大小
+- 执行器只做关机、重启和写 RTC，不执行任何来自配置的命令；计划文件按白名单校验，拒绝符号链接、限制大小
 - 后端只监听 `127.0.0.1:3868`，不对外暴露端口
 - 唯一入口是 `/cgi/ThirdParty/autopower/index.cgi/`，走飞牛登录鉴权（未设置 `disable_authorization_path`）
 - 写接口只接受 `application/json`，阻止跨站表单提交；请求体限制 64KB

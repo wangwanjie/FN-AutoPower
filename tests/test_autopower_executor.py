@@ -97,8 +97,53 @@ class RunOnceTests(ExecutorTestCase):
             executor.run_once(now + dt.timedelta(seconds=30))
         run.assert_called_once_with([executor.POWEROFF], check=False)
         status = self.status()
-        self.assertEqual(status["lastShutdownSchedule"], "night")
-        self.assertEqual(status["history"], [{"time": "2026-10-16T23:00:20+08:00", "schedule": "night"}])
+        self.assertEqual(status["lastActionSchedule"], "night")
+        self.assertEqual(status["lastActionOperation"], "shutdown")
+        self.assertEqual(
+            status["history"],
+            [{"time": "2026-10-16T23:00:20+08:00", "schedule": "night", "operation": "shutdown"}],
+        )
+
+    def test_reboots_once_when_reboot_due(self):
+        self.write_schedules([{"id": "weekly", "operation": "reboot", "days": "custom", "weekdays": [4], "hour": 4, "minute": 0}])
+        now = dt.datetime(2026, 10, 16, 4, 0, 5, tzinfo=TZ)
+
+        def check_saved_before_reboot(command, check):
+            # 重启前状态必须已经落盘，否则重启后同一分钟会再次重启
+            self.assertEqual(self.status()["lastAction"], "2026-10-16T04:00")
+
+        with mock.patch.object(executor.subprocess, "run", side_effect=check_saved_before_reboot) as run:
+            self.assertEqual(executor.run_once(now), 0)
+            # 模拟重启很快完成，执行器在同一分钟内再次运行
+            executor.run_once(now + dt.timedelta(seconds=40))
+        run.assert_called_once_with([executor.REBOOT], check=False)
+        status = self.status()
+        self.assertEqual(status["lastActionOperation"], "reboot")
+        self.assertEqual(status["history"][0]["operation"], "reboot")
+
+    def test_reboots_again_next_occurrence(self):
+        self.write_schedules([{"id": "daily", "operation": "reboot", "days": "daily", "hour": 4, "minute": 0}])
+        start = dt.datetime(2026, 10, 16, 4, 0, tzinfo=TZ)
+        with mock.patch.object(executor.subprocess, "run") as run:
+            executor.run_once(start)
+            executor.run_once(start + dt.timedelta(days=1))
+        self.assertEqual(run.call_args_list, [mock.call([executor.REBOOT], check=False)] * 2)
+
+    def test_shutdown_wins_over_reboot_in_same_minute(self):
+        self.write_schedules([
+            {"id": "re", "operation": "reboot", "days": "daily", "hour": 23, "minute": 0},
+            {"id": "off", "operation": "shutdown", "days": "daily", "hour": 23, "minute": 0},
+        ])
+        with mock.patch.object(executor.subprocess, "run") as run:
+            executor.run_once(dt.datetime(2026, 10, 16, 23, 0, tzinfo=TZ))
+        run.assert_called_once_with([executor.POWEROFF], check=False)
+        self.assertEqual(self.status()["lastActionSchedule"], "off")
+
+    def test_reboot_schedule_does_not_set_wake(self):
+        self.write_schedules([{"id": "re", "operation": "reboot", "days": "daily", "hour": 4, "minute": 0}])
+        with mock.patch.object(executor.subprocess, "run"):
+            executor.run_once(dt.datetime(2026, 10, 16, 12, 0, tzinfo=TZ))
+        self.assertIsNone(self.status()["nextWake"])
 
     def test_history_is_capped(self):
         self.write_schedules([{"id": "night", "operation": "shutdown", "days": "daily", "hour": 23, "minute": 0}])

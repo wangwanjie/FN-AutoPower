@@ -1,6 +1,7 @@
 #!/bin/bash
 set -e
 
-DATA_DIR="${TRIM_PKGVAR:-/var/packages/autopower/var}"
-mkdir -p "$DATA_DIR"
+# 应用以包用户运行（config/privilege 为 run-as: package），此时数据目录 TRIM_PKGVAR
+# 还未由系统创建，且其上级 @appdata 归 root 所有，包用户无权在这里创建目录，
+# 否则 mkdir 失败会让全新安装直接中止。数据目录由系统在安装流程中创建，cmd/main 启动时也会确认。
 exit 0

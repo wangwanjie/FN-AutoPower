@@ -53,9 +53,15 @@ class ValidateScheduleTests(unittest.TestCase):
     def test_custom_weekdays_are_sorted_and_deduplicated(self):
         self.assertEqual(validate_schedule(plan(days="custom", weekdays=[4, "1", 4]))["weekdays"], [1, 4])
 
+    def test_accepts_all_operations(self):
+        for operation in ("wake", "shutdown", "reboot"):
+            with self.subTest(operation=operation):
+                self.assertEqual(validate_schedule(plan(operation=operation))["operation"], operation)
+
     def test_rejects_invalid_values(self):
         invalid = [
-            plan(operation="reboot"),
+            plan(operation="restart"),
+            plan(operation=None),
             plan(hour=24),
             plan(minute=-1),
             plan(hour=True),
@@ -196,15 +202,28 @@ class UpcomingEventsTests(unittest.TestCase):
         events = upcoming_events(schedules, now, days=7, limit=3)
         self.assertEqual([event["id"] for event in events], ["a-on", "b-off", "a-on"])
 
+    def test_same_minute_order_includes_reboot(self):
+        now = dt.datetime(2026, 6, 18, 12, 0, tzinfo=UTC)
+        schedules = [plan(id="a-re", operation="reboot"), plan(id="b-off", operation="shutdown"), plan(id="c-on")]
+        events = upcoming_events(schedules, now, days=1, limit=3)
+        self.assertEqual([event["operation"] for event in events], ["wake", "shutdown", "reboot"])
+
 
 class ConflictTests(unittest.TestCase):
     def test_detects_wake_and_shutdown_in_same_minute(self):
         schedules = [plan(id="on", days="weekday"), plan(id="off", operation="shutdown", days="custom", weekdays=[0])]
-        self.assertEqual(find_conflicts(schedules), [{"kind": "opposite", "hour": 15, "minute": 0, "ids": ["off", "on"]}])
+        self.assertEqual(find_conflicts(schedules), [{"kind": "opposite", "hour": 15, "minute": 0, "ids": ["off", "on"], "operations": ["wake", "shutdown"]}])
+
+    def test_detects_shutdown_and_reboot_in_same_minute(self):
+        schedules = [plan(id="off", operation="shutdown"), plan(id="re", operation="reboot")]
+        self.assertEqual(
+            find_conflicts(schedules),
+            [{"kind": "opposite", "hour": 15, "minute": 0, "ids": ["off", "re"], "operations": ["shutdown", "reboot"]}],
+        )
 
     def test_detects_duplicates_once(self):
         schedules = [plan(id="a"), plan(id="b")]
-        self.assertEqual(find_conflicts(schedules), [{"kind": "duplicate", "hour": 15, "minute": 0, "ids": ["a", "b"]}])
+        self.assertEqual(find_conflicts(schedules), [{"kind": "duplicate", "hour": 15, "minute": 0, "ids": ["a", "b"], "operations": ["wake"]}])
 
     def test_ignores_disabled_and_non_overlapping_days(self):
         schedules = [

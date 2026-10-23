@@ -314,6 +314,15 @@ class HttpApiTests(unittest.TestCase):
         status, _ = self.request("DELETE", f"/api/schedules/{created['id']}")
         self.assertEqual(status, 404)
 
+    def test_reboot_schedule_round_trip(self):
+        status, created = self.request("POST", "/api/schedules", wake(operation="reboot", note="每周重启"))
+        self.assertEqual((status, created["operation"]), (201, "reboot"))
+        status, _ = self.request("POST", "/api/schedules", wake(operation="shutdown"))
+        status, state = self.request("GET", "/api/state")
+        self.assertEqual(state["nextEvent"]["operation"], "shutdown")
+        self.assertEqual({event["operation"] for event in state["upcoming"]}, {"shutdown", "reboot"})
+        self.assertEqual(state["conflicts"][0]["operations"], ["shutdown", "reboot"])
+
     def test_validation_and_routing_errors(self):
         status, body = self.request("POST", "/api/schedules", wake(hour=30))
         self.assertEqual(status, 400)

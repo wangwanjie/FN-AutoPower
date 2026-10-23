@@ -217,7 +217,7 @@ def executor_state(data_dir: Path, now=None):
         result["state"] = "missing"
         return result
 
-    result.update({key: status.get(key) for key in ("version", "lastRun", "nextWake", "lastShutdown", "lastError", "dataDir")})
+    result.update({key: status.get(key) for key in ("version", "lastRun", "nextWake", "lastAction", "lastError", "dataDir")})
     history = status.get("history")
     result["history"] = history if isinstance(history, list) else []
     if status.get("version") != EXECUTOR_VERSION:

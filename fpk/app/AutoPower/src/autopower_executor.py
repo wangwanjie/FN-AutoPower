@@ -2,7 +2,7 @@
 """AutoPower root 执行器。
 
 应用本身以包用户运行，只负责编辑计划并写入 schedules.json。真正需要 root 的
-动作（按计划关机、写主板 RTC 唤醒闹钟、关机前写入下次开机时间）由本执行器完成。
+动作（按计划关机或重启、写主板 RTC 唤醒闹钟、关机前写入下次开机时间）由本执行器完成。
 
 部署方式：管理员通过 SSH 执行一次
     sudo python3 -I <应用目录>/src/autopower_executor.py --install <数据目录>
@@ -10,7 +10,8 @@
 由 /etc/cron.d/autopower 每分钟以 root 运行 --run。
 
 安全边界：
-- 执行器只做两件事：/sbin/poweroff 关机、写 RTC 唤醒闹钟，不执行任何来自配置的命令
+- 执行器只做三件事：/sbin/poweroff 关机、/sbin/reboot 重启、写 RTC 唤醒闹钟，
+  不执行任何来自配置的命令
 - 数据目录只在安装时由管理员指定，写入 root 所有的锚定文件；--run 不接受路径参数
 - 只读取数据目录下的 schedules.json（不跟随符号链接、限制大小、逐条校验），
   从不向应用可写的目录写入任何文件；状态写在 root 所有的 STATE_DIR
@@ -41,7 +42,7 @@ from autopower_core import (  # noqa: E402
 
 
 # 执行器逻辑变化时递增；应用发现已部署版本不一致时提示管理员重新部署
-EXECUTOR_VERSION = "1.1.0"
+EXECUTOR_VERSION = "1.2.0"
 
 INSTALL_DIR = Path("/usr/local/lib/autopower")
 INSTALLED_EXECUTOR = INSTALL_DIR / "autopower_executor.py"
@@ -55,10 +56,15 @@ WAKEALARM_PATH = Path("/sys/class/rtc/rtc0/wakealarm")
 RTC_SINCE_EPOCH_PATH = Path("/sys/class/rtc/rtc0/since_epoch")
 BOOT_ID_PATH = Path("/proc/sys/kernel/random/boot_id")
 POWEROFF = "/sbin/poweroff"
+REBOOT = "/sbin/reboot"
+# 执行器按计划执行的系统命令，只允许这两个固定路径
+POWER_COMMANDS = {"shutdown": POWEROFF, "reboot": REBOOT}
+# 同一分钟同时命中关机与重启计划时只执行一个，关机优先
+POWER_PRIORITY = ("shutdown", "reboot")
 # 找不到当前解释器的绝对路径时使用的默认值
 DEFAULT_PYTHON = "/usr/bin/python3"
 SCHEDULES_MAX_BYTES = 256 * 1024
-# status.json 中保留的最近关机记录条数，供应用界面展示
+# status.json 中保留的最近关机、重启记录条数，供应用界面展示
 HISTORY_LIMIT = 10
 # 1.1.x 以 root 运行时安装的旧唤醒脚本，部署执行器时一并清理
 LEGACY_WAKE_SCRIPT = Path("/usr/local/bin/autopower-set-next-wake.sh")
@@ -213,13 +219,17 @@ def write_rtc_wake(timestamp):
     return offset
 
 
-def shutdown_due(schedules, now):
-    """当前这一分钟是否命中某条启用的关机计划，命中时返回计划 id。"""
-    for schedule in schedules:
-        if not schedule["enabled"] or schedule["operation"] != "shutdown":
-            continue
-        if schedule["hour"] == now.hour and schedule["minute"] == now.minute and now.weekday() in schedule["weekdays"]:
-            return schedule["id"]
+def power_action_due(schedules, now):
+    """当前这一分钟是否命中启用的关机或重启计划，命中时返回 (计划 id, 操作)，否则返回 None。
+
+    同一分钟同时命中关机和重启时按 POWER_PRIORITY 只取一个，界面会把这种情况提示为计划冲突。
+    """
+    for operation in POWER_PRIORITY:
+        for schedule in schedules:
+            if not schedule["enabled"] or schedule["operation"] != operation:
+                continue
+            if schedule["hour"] == now.hour and schedule["minute"] == now.minute and now.weekday() in schedule["weekdays"]:
+                return schedule["id"], operation
     return None
 
 
@@ -240,7 +250,7 @@ def sync_wake(schedules, status, now=None, force=False):
 
 
 def run_once(now=None):
-    """cron 每分钟调用：同步 RTC 唤醒，命中关机计划时关机。"""
+    """cron 每分钟调用：同步 RTC 唤醒，命中关机或重启计划时执行对应操作。"""
     clock = now or now_local()
     status = load_status()
     status["lastRun"] = clock.isoformat(timespec="seconds")
@@ -249,18 +259,21 @@ def run_once(now=None):
         schedules = load_schedules(data_dir)
         sync_wake(schedules, status, now)
         minute_key = clock.strftime("%Y-%m-%dT%H:%M")
-        schedule_id = shutdown_due(schedules, clock)
-        # 同一分钟只关机一次：开机恰好落在关机那一分钟时不会再次关机
-        if schedule_id and status.get("lastShutdown") != minute_key:
-            status["lastShutdown"] = minute_key
-            status["lastShutdownSchedule"] = schedule_id
+        due = power_action_due(schedules, clock)
+        # 同一分钟只执行一次：开机或重启完成后恰好还在同一分钟时不会再次关机、重启。
+        # 必须先写入状态再执行命令，重启后读到的才是已执行的记录
+        if due and status.get("lastAction") != minute_key:
+            schedule_id, operation = due
+            status["lastAction"] = minute_key
+            status["lastActionSchedule"] = schedule_id
+            status["lastActionOperation"] = operation
             history = status.get("history") if isinstance(status.get("history"), list) else []
-            history.insert(0, {"time": clock.isoformat(timespec="seconds"), "schedule": schedule_id})
+            history.insert(0, {"time": clock.isoformat(timespec="seconds"), "schedule": schedule_id, "operation": operation})
             status["history"] = history[:HISTORY_LIMIT]
             status["lastError"] = None
             save_status(status)
-            log(f"按计划 {schedule_id} 关机")
-            subprocess.run([POWEROFF], check=False)
+            log(f"按计划 {schedule_id} {'重启' if operation == 'reboot' else '关机'}")
+            subprocess.run([POWER_COMMANDS[operation]], check=False)
             return 0
         status["lastError"] = None
         save_status(status)
@@ -346,7 +359,7 @@ def install(raw_data_dir):
     executor = f"{shlex.quote(python_path())} -I {INSTALLED_EXECUTOR}"
     write_atomic(
         CRON_FILE,
-        "# AutoPower：每分钟检查关机计划并同步 RTC 唤醒闹钟\n"
+        "# AutoPower：每分钟检查关机、重启计划并同步 RTC 唤醒闹钟\n"
         "SHELL=/bin/sh\n"
         "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n"
         f"* * * * * root {executor} --run >/dev/null 2>&1\n",
