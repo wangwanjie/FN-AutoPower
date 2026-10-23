@@ -396,6 +396,10 @@ function setDays(days, weekdays = dayDefaults[days] || dayDefaults.daily) {
   daysInput.value = days;
   daysButtonText.textContent = dayLabels[days] || "每天";
   setWeekdayChecks(weekdays);
+  // 星期下拉层相对弹窗定位，内容区滚动后位置会错开，滚动时直接收起
+  scheduleModal.querySelector(".modal-body").addEventListener("scroll", () => {
+    weekdayMenu.classList.add("hidden");
+  });
   weekdayMenu.querySelectorAll("[data-days]").forEach((item) => {
     item.classList.toggle("selected", item.dataset.days === days);
   });
@@ -524,6 +528,40 @@ function closeAllDialogs() {
   }
 }
 
+// 星期下拉层相对弹窗定位，按日期按钮的实际位置放在它正下方。
+// 操作选项数量、窄屏单列布局、内容区滚动都会改变按钮位置，不能写死 top
+function positionWeekdayMenu() {
+  const modalRect = scheduleModal.getBoundingClientRect();
+  const buttonRect = daysButton.getBoundingClientRect();
+  const top = buttonRect.bottom - modalRect.top + 4;
+  weekdayMenu.style.top = `${Math.round(top)}px`;
+  // 下拉层不超出窗口底部，空间不够时内部滚动
+  weekdayMenu.style.maxHeight = `${Math.max(160, Math.min(360, window.innerHeight - buttonRect.bottom - 16))}px`;
+}
+
+// 弹窗打开期间锁住页面滚动。手机 WebView 里只设 overflow: hidden 挡不住触摸滚动，
+// 所以把 body 固定在当前位置，关闭时再滚回原处
+let lockedScrollY = null;
+
+function syncScrollLock() {
+  const open = anyDialogOpen();
+  if (open && lockedScrollY === null) {
+    lockedScrollY = window.scrollY;
+    document.body.style.top = `-${lockedScrollY}px`;
+    document.body.classList.add("scroll-locked");
+  } else if (!open && lockedScrollY !== null) {
+    document.body.classList.remove("scroll-locked");
+    document.body.style.top = "";
+    window.scrollTo(0, lockedScrollY);
+    lockedScrollY = null;
+  }
+}
+
+// 所有弹窗都通过显示遮罩打开、隐藏遮罩关闭，监听遮罩即可覆盖全部弹窗
+function watchScrollLock() {
+  new MutationObserver(syncScrollLock).observe(modalOverlay, { attributes: true, attributeFilter: ["class"] });
+}
+
 // 包装异步事件处理：任何接口失败都在底部状态栏提示，而不是静默吞掉。
 function guarded(handler) {
   return async (...args) => {
@@ -567,6 +605,9 @@ function wireEvents() {
   }));
   daysButton.addEventListener("click", () => {
     weekdayMenu.classList.toggle("hidden");
+    if (!weekdayMenu.classList.contains("hidden")) {
+      positionWeekdayMenu();
+    }
   });
   document.addEventListener("click", (event) => {
     if (weekdayMenu.classList.contains("hidden")) return;
@@ -608,6 +649,7 @@ function startAutoRefresh() {
 async function boot() {
   initTimeSelects();
   wireEvents();
+  watchScrollLock();
   try {
     await loadState();
   } catch (error) {

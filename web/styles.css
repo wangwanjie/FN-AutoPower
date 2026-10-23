@@ -419,6 +419,16 @@ button.check {
   inset: 0;
   z-index: 2;
   background: rgba(15, 23, 42, 0.1);
+  /* 遮罩上的手势不触发页面滚动 */
+  touch-action: none;
+}
+
+/* 弹窗打开期间锁住页面滚动，避免手机上滑动穿透到底下的列表（定位由 app.js 设置） */
+body.scroll-locked {
+  position: fixed;
+  left: 0;
+  right: 0;
+  overflow: hidden;
 }
 
 .modal {
@@ -427,7 +437,14 @@ button.check {
   left: 50%;
   top: 64px;
   width: min(560px, calc(100% - 40px));
+  /* 窗口高度不够时只让内容区滚动，标题栏和底部按钮始终可见。
+     dvh 跟随手机浏览器地址栏伸缩，不支持时退回 vh */
+  max-height: calc(100vh - 80px);
+  max-height: calc(100dvh - 80px);
+  display: flex;
+  flex-direction: column;
   transform: translateX(-50%);
+  /* 保持 visible：星期下拉层相对弹窗定位，需要能超出弹窗底部 */
   overflow: visible;
   border: 1px solid var(--line);
   border-radius: var(--radius-card);
@@ -436,6 +453,7 @@ button.check {
 }
 
 .modal-header {
+  flex: none;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -462,7 +480,13 @@ button.check {
 }
 
 .modal-body {
+  flex: 1 1 auto;
+  min-height: 0;
   padding: 18px;
+  overflow-y: auto;
+  /* 滚到头时不把滚动传给底下的页面 */
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
 }
 
 .form-grid {
@@ -538,6 +562,7 @@ button.check {
 }
 
 .modal-footer {
+  flex: none;
   display: flex;
   justify-content: flex-end;
   gap: 10px;
@@ -664,6 +689,8 @@ button.check {
 
   .modal {
     top: 24px;
+    max-height: calc(100vh - 40px);
+    max-height: calc(100dvh - 40px);
   }
 }
 
