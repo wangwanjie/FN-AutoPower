@@ -5,6 +5,7 @@ AutoPower（自动开关机）是一个飞牛 fnOS 应用，为 NAS 设置**定�
 ![AutoPower 主界面](docs/images/autopower-main.png)
 
 - 支持平台：fnOS x86、ARM（纯 Python + Bash，依赖系统自带的 `python3` 与 `curl`；x86 已实机验证，ARM 尚未实机验证）
+- 主页：<https://autopower.vanjay.cn>
 - 开源协议：[MIT](LICENSE)
 - 更新日志：[CHANGELOG.md](CHANGELOG.md)
 
@@ -94,6 +95,8 @@ scripts/build-store.sh       汇总上架材料到 store/（构建产物，不�
 scripts/demo-server.py       带示例数据的演示服务（不读写系统文件）
 scripts/capture-screenshots.mjs  用无头 Chrome 重新生成 docs/images 下的截图
 scripts/create-icons.py      重新生成图标（需要 Pillow，仅改图标设计时运行）
+scripts/publish_site.sh      把 site/ 作为单个提交强推到 gh-pages 分支（GitHub Pages）
+site/                        项目主页（https://autopower.vanjay.cn）
 design/                      OpenDesign 参考稿
 ```
 
@@ -150,6 +153,20 @@ dist-fpk/autopower-<version>-SHA256SUMS.txt
 
 ```bash
 gh release create v<version> dist-fpk/autopower-<version>-*.fpk dist-fpk/autopower-<version>-SHA256SUMS.txt --title "AutoPower <version>" --notes-file <说明文件>
+```
+
+### 主页
+
+`site/` 是静态主页（无构建步骤），本地预览：
+
+```bash
+python3 -m http.server 8000 -d site
+```
+
+提交后发布到 GitHub Pages（把 HEAD 中的 `site/` 作为单个提交强推到 `gh-pages`；`DRY_RUN=1` 只生成提交不推送）：
+
+```bash
+./scripts/publish_site.sh
 ```
 
 ### fnOS 安装与刷新
